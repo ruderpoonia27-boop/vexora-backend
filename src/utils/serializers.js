@@ -92,6 +92,8 @@ export const serializeUser = (user) => {
     avatarId: source.avatar_id || source.avatarId || 'vanguard-01',
     avatar_rarity: source.avatar_rarity || source.avatarRarity || 'Legendary',
     avatarRarity: source.avatar_rarity || source.avatarRarity || 'Legendary',
+    profile_setup_completed: source.profile_setup_completed !== false,
+    profileSetupCompleted: source.profile_setup_completed !== false,
     walletBalance: source.walletBalance || 0,
     wallet_balance: source.walletBalance || 0,
     isAdmin: !!source.isAdmin,

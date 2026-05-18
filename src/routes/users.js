@@ -74,6 +74,7 @@ router.get('/profile/:id', async (req, res) => {
 const updateUser = async (req, res) => {
   try {
     const { name, oldPassword, password, passwordConfirm } = req.body;
+    const trimmedName = typeof name === 'string' ? name.trim() : '';
     const avatarId = req.body.avatarId || req.body.avatar_id;
 
     if (password && password !== passwordConfirm) {
@@ -86,8 +87,9 @@ const updateUser = async (req, res) => {
         return res.status(404).json({ error: 'User not found' });
       }
 
-      if (name) user.name = name;
+      if (trimmedName) user.name = trimmedName;
       if (avatarId) user.avatar_id = String(avatarId).trim();
+      if (trimmedName && user.avatar_id) user.profile_setup_completed = true;
       if (password) {
         if (!oldPassword) {
           return res.status(400).json({ error: 'Current password is required' });
@@ -108,8 +110,11 @@ const updateUser = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    if (name) store.users[userIndex].name = name;
+    if (trimmedName) store.users[userIndex].name = trimmedName;
     if (avatarId) store.users[userIndex].avatar_id = String(avatarId).trim();
+    if (trimmedName && store.users[userIndex].avatar_id) {
+      store.users[userIndex].profile_setup_completed = true;
+    }
     if (password) {
       const isMatch = await bcrypt.compare(oldPassword || '', store.users[userIndex].password);
       if (!isMatch) {

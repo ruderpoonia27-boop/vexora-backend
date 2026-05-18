@@ -12,13 +12,15 @@ const router = express.Router();
 
 router.post('/register', async (req, res) => {
   try {
-    const { email, password, name } = req.body;
+    const { email, password } = req.body;
+    const providedName = String(req.body.name || '').trim();
+    const name = providedName || `Player${Date.now().toString(36).toUpperCase()}`;
     const avatarId = String(req.body.avatarId || req.body.avatar_id || 'vanguard-01').trim() || 'vanguard-01';
     const referralCode = normalizeReferralCode(req.body.referralCode || req.body.referral_code || '');
     const acceptedPolicies = req.body.acceptedPolicies === true || req.body.accepted_policies === true;
     
-    if (!email || !password || !name) {
-      return res.status(400).json({ error: 'Email, password, and name are required' });
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
     }
     if (!acceptedPolicies) {
       return res.status(400).json({ error: 'You must accept the Terms & Conditions and Privacy Policy' });
@@ -50,6 +52,7 @@ router.post('/register', async (req, res) => {
         password: hashedPassword,
         name,
         avatar_id: avatarId,
+        profile_setup_completed: !!providedName,
         isAdmin: email === process.env.DEFAULT_ADMIN_EMAIL,
         referral_code: uniqueReferralCode,
         referred_by: referrer?._id,
@@ -97,6 +100,7 @@ router.post('/register', async (req, res) => {
         password: hashedPassword,
         name,
         avatar_id: avatarId,
+        profile_setup_completed: !!providedName,
         walletBalance: 0,
         isAdmin: email === process.env.DEFAULT_ADMIN_EMAIL,
         referral_code: uniqueReferralCode,

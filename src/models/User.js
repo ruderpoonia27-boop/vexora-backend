@@ -7,6 +7,7 @@ const userSchema = new mongoose.Schema({
   walletBalance: { type: Number, default: 0 },
   avatar_id: { type: String, default: 'vanguard-01' },
   avatar_rarity: { type: String, default: 'Legendary' },
+  profile_setup_completed: { type: Boolean, default: true },
   referral_code: { type: String, unique: true, sparse: true },
   referred_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   referred_by_code: String,
