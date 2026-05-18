@@ -1,0 +1,27 @@
+{
+  "name": "api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "lint": "eslint src --quiet",
+    "mongo:check": "node src/scripts/checkMongoConnection.js",
+    "mongo:migrate": "node src/scripts/migrateStoreToMongo.js",
+    "referrals:repair": "node src/scripts/repairReferralDeposits.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongodb": "^7.2.0",
+    "mongoose": "^8.23.1"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.4",
+    "nodemon": "^3.1.9"
+  }
+}
