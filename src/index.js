@@ -34,6 +34,13 @@ const app = express();
 const PORT = process.env.PORT || 34567;
 let startupPromise = null;
 
+const getAllowedOrigins = () => (
+  (process.env.CLIENT_URL || 'http://localhost:3000')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
+
 export const ensureStartup = () => {
   if (!startupPromise) {
     startupPromise = (async () => {
@@ -53,9 +60,23 @@ export const ensureStartup = () => {
   return startupPromise;
 };
 
-app.use(cors({ 
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
-  credentials: true 
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const allowedOrigins = getAllowedOrigins();
+    let isVercelPreview = false;
+    try {
+      isVercelPreview = /\.vercel\.app$/.test(new URL(origin).hostname);
+    } catch {
+      isVercelPreview = false;
+    }
+    const isAllowed = allowedOrigins.includes(origin) || isVercelPreview;
+    return callback(isAllowed ? null : new Error(`CORS blocked for origin: ${origin}`), isAllowed);
+  },
+  credentials: true
 }));
 app.use(express.json({ limit: '8mb' }));
 app.use(express.urlencoded({ extended: true, limit: '8mb' }));
