@@ -19,12 +19,12 @@ const connectDB = async () => {
     configureDnsServers();
     const connectPromise = mongoose.connect(MONGODB_URI, {
       maxPoolSize: 5,
-      serverSelectionTimeoutMS: 5000,
-      connectTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 20000,
+      connectTimeoutMS: 20000,
       socketTimeoutMS: 45000,
     });
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('MongoDB connection timed out')), 8000);
+      setTimeout(() => reject(new Error('MongoDB connection timed out')), 25000);
     });
     const conn = await Promise.race([connectPromise, timeoutPromise]);
     isConnected = true;

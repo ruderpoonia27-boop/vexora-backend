@@ -5,7 +5,7 @@ let configured = false;
 export const configureDnsServers = () => {
   if (configured) return;
 
-  const servers = (process.env.DNS_SERVERS || '8.8.8.8,1.1.1.1')
+  const servers = (process.env.DNS_SERVERS || '')
     .split(',')
     .map((server) => server.trim())
     .filter(Boolean);
@@ -13,5 +13,6 @@ export const configureDnsServers = () => {
   if (servers.length > 0) {
     dns.setServers(servers);
     configured = true;
+    console.log(`Custom DNS servers configured: ${servers.join(', ')}`);
   }
 };

@@ -44,7 +44,10 @@ export const ensureStartup = () => {
       await seedAdmin();
       await normalizeReferralCodes();
       await seedAnnouncements();
-    })();
+    })().catch((error) => {
+      startupPromise = null;
+      throw error;
+    });
   }
 
   return startupPromise;
@@ -312,10 +315,13 @@ const seedAnnouncements = async () => {
   }
 };
 
-const startServer = async () => {
-  await ensureStartup();
+const startServer = () => {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+  });
+
+  ensureStartup().catch((error) => {
+    console.error('Startup initialization failed:', error.message);
   });
 };
 
