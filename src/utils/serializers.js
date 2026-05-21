@@ -142,6 +142,7 @@ export const serializeTournament = (tournament) => {
   const winnerSquadId = source.winner_squad || source.winnerSquad || '';
   const winnerSquad = serializeWinningSquad(squads, winnerSquadId);
   const participantProfiles = (source.participant_profiles || source.participantProfiles || []).map(serializeParticipantProfile).filter(Boolean);
+  const publicPrizePool = basePrize + (entryFee * joinedCount);
 
   return {
     ...source,
@@ -160,6 +161,10 @@ export const serializeTournament = (tournament) => {
     base_prize: basePrize,
     basePrize,
     prizePool: basePrize,
+    public_prize_pool: publicPrizePool,
+    publicPrizePool,
+    total_prize_pool: publicPrizePool,
+    totalPrizePool: publicPrizePool,
     first_prize_percentage: firstPrizePercentage,
     firstPrizePercentage,
     solo_first_place_percentage: Number(source.solo_first_place_percentage ?? source.soloFirstPlacePercentage ?? 60),
