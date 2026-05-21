@@ -34,10 +34,19 @@ const app = express();
 const PORT = process.env.PORT || 34567;
 let startupPromise = null;
 
+const DEFAULT_ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'https://vexora.business',
+  'https://www.vexora.business'
+];
+
+const normalizeOrigin = (origin) => String(origin || '').trim().replace(/\/+$/, '');
+
 const getAllowedOrigins = () => (
-  (process.env.CLIENT_URL || 'http://localhost:3000')
+  (process.env.CLIENT_URL || '')
     .split(',')
-    .map((origin) => origin.trim())
+    .map(normalizeOrigin)
     .filter(Boolean)
 );
 
@@ -66,14 +75,15 @@ app.use(cors({
       return callback(null, true);
     }
 
-    const allowedOrigins = getAllowedOrigins();
+    const allowedOrigins = [...new Set([...DEFAULT_ALLOWED_ORIGINS, ...getAllowedOrigins()])];
+    const normalizedOrigin = normalizeOrigin(origin);
     let isVercelPreview = false;
     try {
-      isVercelPreview = /\.vercel\.app$/.test(new URL(origin).hostname);
+      isVercelPreview = /\.vercel\.app$/.test(new URL(normalizedOrigin).hostname);
     } catch {
       isVercelPreview = false;
     }
-    const isAllowed = allowedOrigins.includes(origin) || isVercelPreview;
+    const isAllowed = allowedOrigins.includes(normalizedOrigin) || isVercelPreview;
     return callback(isAllowed ? null : new Error(`CORS blocked for origin: ${origin}`), isAllowed);
   },
   credentials: true
