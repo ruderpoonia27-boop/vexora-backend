@@ -26,16 +26,20 @@ const tournamentSchema = new mongoose.Schema({
     in_game_name: { type: String, required: true },
     game_uid: { type: String, required: true },
     game_name: String,
-    join_method: { type: String, enum: ['wallet', 'free_entry'], default: 'wallet' },
+    join_method: { type: String, enum: ['wallet', 'free_entry', 'squad_captain', 'squad_invite'], default: 'wallet' },
     squad_id: String,
     joined_at: { type: Date, default: Date.now }
   }],
   squads: [{
     name: { type: String, required: true },
     squad_code: { type: String, required: true },
-    squad_password: { type: String, required: true },
+    squad_password: { type: String, default: '' },
     captain: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     members: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    total_entry_fee: { type: Number, default: 0 },
+    entry_paid: { type: Boolean, default: true },
+    status: { type: String, enum: ['forming', 'complete'], default: 'forming' },
+    locked_at: Date,
     createdAt: { type: Date, default: Date.now }
   }],
   joined_count: { type: Number, default: 0 },
@@ -108,6 +112,20 @@ tournamentSchema.pre('save', function syncTournamentFields(next) {
     join_method: profile?.join_method || profile?.joinMethod || 'wallet'
   }));
   this.squads = Array.isArray(this.squads) ? this.squads : [];
+  this.squads = this.squads.map((squad) => {
+    const memberCount = Array.isArray(squad.members) ? squad.members.length : 0;
+    const totalEntryFee = Number(squad.total_entry_fee ?? squad.totalEntryFee ?? this.entry_fee * this.squad_size);
+    const isComplete = this.match_type === 'squad' && memberCount >= this.squad_size;
+    squad.squad_code = squad.squad_code || squad.squadCode || squad.squad_password || '';
+    squad.squad_password = squad.squad_password || squad.squadPassword || squad.squad_code || '';
+    squad.total_entry_fee = totalEntryFee;
+    squad.entry_paid = squad.entry_paid !== false;
+    squad.status = isComplete ? 'complete' : 'forming';
+    if (isComplete && !squad.locked_at) {
+      squad.locked_at = new Date();
+    }
+    return squad;
+  });
   this.match_start_time = this.match_start_time || this.startTime;
   this.startTime = this.match_start_time;
   this.room_id = this.room_id || this.roomId;

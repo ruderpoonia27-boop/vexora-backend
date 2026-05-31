@@ -37,14 +37,28 @@ const serializeSquad = (squad) => {
   const squadId = asId(squad._id) || squad.id;
   const members = (squad.members || []).map(serializePlayer).filter(Boolean);
   const captainId = asId(squad.captain);
+  const squadCode = squad.squad_code || squad.squadCode || '';
+  const squadSize = Number(squad.squad_size || squad.squadSize || members.length || 0);
+  const isComplete = (squad.status || '') === 'complete' || (squadSize > 0 && members.length >= squadSize);
   return {
     _id: squadId,
     id: squadId,
     name: squad.name,
+    squad_code: squadCode,
+    squadCode,
+    inviteCode: squadCode,
     captain: serializePlayer(squad.captain),
     captainId,
     members,
     memberCount: members.length,
+    total_entry_fee: Number(squad.total_entry_fee || squad.totalEntryFee || 0),
+    totalEntryFee: Number(squad.total_entry_fee || squad.totalEntryFee || 0),
+    entry_paid: squad.entry_paid !== false,
+    entryPaid: squad.entry_paid !== false,
+    status: isComplete ? 'complete' : 'forming',
+    isComplete,
+    locked_at: squad.locked_at || squad.lockedAt || null,
+    lockedAt: squad.locked_at || squad.lockedAt || null,
     createdAt: squad.createdAt || null
   };
 };
@@ -138,11 +152,18 @@ export const serializeTournament = (tournament) => {
   const thirdWinner = serializeWinner(source.third_winner || source.thirdWinner);
   const matchType = source.match_type || source.matchType || 'solo';
   const squadSize = Number(source.squad_size ?? source.squadSize ?? (matchType === 'squad' ? 4 : 1));
-  const squads = (source.squads || []).map(serializeSquad).filter(Boolean);
+  const squads = (source.squads || []).map((squad) => serializeSquad({ ...squad, squad_size: squadSize })).filter(Boolean);
   const winnerSquadId = source.winner_squad || source.winnerSquad || '';
   const winnerSquad = serializeWinningSquad(squads, winnerSquadId);
   const participantProfiles = (source.participant_profiles || source.participantProfiles || []).map(serializeParticipantProfile).filter(Boolean);
-  const publicPrizePool = basePrize + (entryFee * joinedCount);
+  const paidSquadCount = matchType === 'squad'
+    ? squads.filter((squad) => squad.entryPaid).length
+    : 0;
+  const squadEntryFee = entryFee * squadSize;
+  const totalCollection = matchType === 'squad'
+    ? squads.reduce((sum, squad) => sum + Number(squad.totalEntryFee || squadEntryFee || 0), 0)
+    : entryFee * joinedCount;
+  const publicPrizePool = basePrize + totalCollection;
 
   return {
     ...source,
@@ -181,6 +202,12 @@ export const serializeTournament = (tournament) => {
     squads,
     joined_count: joinedCount,
     joinedCount,
+    paid_squad_count: paidSquadCount,
+    paidSquadCount,
+    reserved_slots: matchType === 'squad' ? paidSquadCount * squadSize : joinedCount,
+    reservedSlots: matchType === 'squad' ? paidSquadCount * squadSize : joinedCount,
+    squad_entry_fee: squadEntryFee,
+    squadEntryFee,
     match_start_time: startTime,
     startTime,
     room_id: roomId,
@@ -205,8 +232,8 @@ export const serializeTournament = (tournament) => {
     winnerSquad,
     winner_prize: Number(source.winner_prize || 0),
     winnerPrize: Number(source.winner_prize || 0),
-    total_collection: Number(source.total_collection || source.totalCollection || 0),
-    totalCollection: Number(source.total_collection || source.totalCollection || 0),
+    total_collection: Number(source.total_collection || source.totalCollection || totalCollection || 0),
+    totalCollection: Number(source.total_collection || source.totalCollection || totalCollection || 0),
     reward_pool: Number(source.reward_pool || source.rewardPool || 0),
     rewardPool: Number(source.reward_pool || source.rewardPool || 0),
     platform_earnings: Number(source.platform_earnings || source.platformEarnings || 0),

@@ -151,13 +151,19 @@ const normalizeSquadsForOffline = (tournament) => {
   tournament.squads = tournament.squads.map((squad, index) => {
     const existingSquad = squad || {};
     const normalizedCode = getSquadCode(existingSquad) || generateInternalSquadCode(tournament.squads);
-    const normalizedPassword = buildLegacySquadPassword(existingSquad, index);
+    const normalizedPassword = buildLegacySquadPassword(existingSquad, index) || normalizedCode;
+    const memberCount = Number(existingSquad.members?.length || 0);
+    const isComplete = memberCount >= getSquadSize(tournament);
 
     return {
       ...existingSquad,
       _id: existingSquad._id || existingSquad.id || `offline_squad_${Date.now()}_${index}`,
       squad_code: normalizedCode,
-      squad_password: normalizedPassword
+      squad_password: normalizedPassword,
+      total_entry_fee: Number(existingSquad.total_entry_fee ?? existingSquad.totalEntryFee ?? getSquadEntryFee(tournament)),
+      entry_paid: existingSquad.entry_paid ?? existingSquad.entryPaid ?? true,
+      status: isComplete ? 'complete' : 'forming',
+      locked_at: existingSquad.locked_at || existingSquad.lockedAt || (isComplete ? new Date().toISOString() : undefined)
     };
   });
 
@@ -222,43 +228,61 @@ const findSquadByPassword = (squads = [], squadPassword) => (
 
 const getSquadSize = (tournament) => Number(tournament?.squad_size || tournament?.squadSize || 4);
 
+const getSquadEntryFee = (tournament) => Number(tournament?.entry_fee || tournament?.entryFee || 0) * getSquadSize(tournament);
+
+const getReservedSquadSlots = (tournament) => (
+  (tournament?.squads || []).length * getSquadSize(tournament)
+);
+
 const getRemainingSquadSlots = (tournament, squad) => Math.max(0, getSquadSize(tournament) - Number(squad?.members?.length || 0));
 
 const getSquadId = (squad) => squad?._id?.toString?.() || squad?.id?.toString?.() || '';
 
+const syncSquadStatus = (tournament, squad) => {
+  if (!squad) return squad;
+  const isComplete = getRemainingSquadSlots(tournament, squad) === 0;
+  squad.status = isComplete ? 'complete' : 'forming';
+  if (isComplete && !squad.locked_at && !squad.lockedAt) {
+    squad.locked_at = new Date();
+  }
+  return squad;
+};
+
 const generateInternalSquadCode = (squads = []) => {
   let nextCode = '';
   do {
-    nextCode = `SQD${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    nextCode = `VEX${Math.floor(1000 + Math.random() * 9000)}`;
   } while (findSquadByCode(squads, nextCode));
   return nextCode;
 };
 
 const buildSquadPayload = (body, squads = []) => {
   const squadName = String(body?.squadName || body?.name || '').trim();
-  const squadPassword = normalizeSquadPassword(body?.squadPassword || body?.squad_password);
+  const requestedCode = normalizeSquadCode(body?.squadCode || body?.squad_code);
+  const squadCode = requestedCode || generateInternalSquadCode(squads);
 
   if (!squadName) {
     throw new Error('Squad name is required');
   }
-  if (!squadPassword) {
-    throw new Error('Squad password is required');
+  if (findSquadByCode(squads, squadCode)) {
+    throw new Error('Squad code already exists');
   }
 
   return {
     squadName,
-    squadCode: generateInternalSquadCode(squads),
-    squadPassword
+    squadCode,
+    squadPassword: squadCode
   };
 };
 
 const findSquadByCode = (squads = [], squadCode) => squads.find((squad) => getSquadCode(squad) === normalizeSquadCode(squadCode)) || null;
 
-const applyJoinCharge = (user, tournament, body) => {
+const applyJoinCharge = (user, tournament, body, amountOverride = null) => {
   const joinMethod = normalizeJoinMethod(body);
   const freeEntryState = getUserFreeEntryState(user);
+  const amount = Number(amountOverride ?? tournament.entry_fee ?? tournament.entryFee ?? 0);
 
-  if (joinMethod === 'free_entry') {
+  if (joinMethod === 'free_entry' && amountOverride === null) {
     if (freeEntryState.available < 1) {
       throw new Error('No free entries available');
     }
@@ -269,10 +293,10 @@ const applyJoinCharge = (user, tournament, body) => {
     return { joinMethod, usedFreeEntry: true };
   }
 
-  if ((user.walletBalance || 0) < tournament.entry_fee) {
+  if ((user.walletBalance || 0) < amount) {
     throw new Error('Insufficient balance');
   }
-  user.walletBalance -= tournament.entry_fee;
+  user.walletBalance -= amount;
   return { joinMethod, usedFreeEntry: false };
 };
 
@@ -411,6 +435,12 @@ const buildJoinedUserRecord = (user, tournament, profile, squad = null) => {
   const resolvedProfile = profile || getUserGameProfileForTournament(user, tournament) || null;
   const joinMethod = resolvedProfile?.join_method || resolvedProfile?.joinMethod || 'wallet';
   const captainId = squad ? getUserId(squad.captain) : '';
+  const paymentStatusMap = {
+    free_entry: 'Referral Reward Entry',
+    squad_captain: 'Captain Paid Full Squad Fee',
+    squad_invite: 'Covered by Captain',
+    wallet: 'Paid via Wallet'
+  };
 
   return {
     ...serializeUser(user),
@@ -419,7 +449,7 @@ const buildJoinedUserRecord = (user, tournament, profile, squad = null) => {
     joinedAt: resolvedProfile?.joinedAt || resolvedProfile?.joined_at || null,
     matchType: tournament?.match_type || tournament?.matchType || 'solo',
     joinMethod,
-    paymentStatus: joinMethod === 'free_entry' ? 'Referral Reward Entry' : 'Paid via Wallet',
+    paymentStatus: paymentStatusMap[joinMethod] || 'Paid via Wallet',
     squadInfo: squad ? {
       id: squad._id?.toString?.() || squad.id || '',
       name: squad.name || '',
@@ -428,7 +458,9 @@ const buildJoinedUserRecord = (user, tournament, profile, squad = null) => {
       captainName: squad.captain?.name || squad.captain?.email || '',
       isLeader: captainId === getUserId(user),
       memberCount: squad.memberCount || squad.members?.length || 0,
-      waitingCount: getRemainingSquadSlots(tournament, squad)
+      waitingCount: getRemainingSquadSlots(tournament, squad),
+      status: getRemainingSquadSlots(tournament, squad) === 0 ? 'complete' : 'forming',
+      totalEntryFee: Number(squad.total_entry_fee || squad.totalEntryFee || getSquadEntryFee(tournament))
     } : null,
     tournamentProfile: resolvedProfile || null
   };
@@ -445,9 +477,14 @@ const canRevealRoomDetails = (tournament) => {
 };
 
 const buildSquadLobbyResponse = (tournament, squad, joinedUsers, currentUserId) => {
-  const roomVisible = canRevealRoomDetails(tournament);
+  const squadComplete = getRemainingSquadSlots(tournament, squad) === 0;
+  const roomVisible = squadComplete && canRevealRoomDetails(tournament);
   const roomId = roomVisible ? (tournament?.room_id || tournament?.roomId || '') : '';
   const roomPassword = roomVisible ? (tournament?.room_password || tournament?.roomPassword || '') : '';
+  const captainId = getUserId(squad?.captain);
+  const currentUserIsCaptain = captainId === currentUserId;
+  const captainRecord = joinedUsers.find((user) => (user._id || user.id) === captainId) || null;
+  const visibleUsers = captainRecord ? [captainRecord] : [];
 
   return {
     tournamentId: tournament?._id?.toString?.() || tournament?.id || '',
@@ -458,12 +495,17 @@ const buildSquadLobbyResponse = (tournament, squad, joinedUsers, currentUserId) 
     squad: {
       id: squad?._id?.toString?.() || squad?.id || '',
       name: squad?.name || '',
-      password: getSquadPassword(squad),
-      captainId: getUserId(squad?.captain),
+      code: currentUserIsCaptain ? getSquadCode(squad) : '',
+      inviteCode: currentUserIsCaptain ? getSquadCode(squad) : '',
+      password: currentUserIsCaptain ? getSquadCode(squad) : '',
+      canShareInvite: currentUserIsCaptain,
+      captainId,
       memberCount: squad?.memberCount || squad?.members?.length || 0,
       remainingSlots: getRemainingSquadSlots(tournament, squad),
-      isComplete: getRemainingSquadSlots(tournament, squad) === 0,
-      members: joinedUsers.map((user) => ({
+      isComplete: squadComplete,
+      status: squadComplete ? 'complete' : 'forming',
+      totalEntryFee: Number(squad?.total_entry_fee || squad?.totalEntryFee || getSquadEntryFee(tournament)),
+      members: visibleUsers.map((user) => ({
         id: user._id || user.id,
         name: user.name || user.email || 'Unknown Player',
         avatarId: user.avatarId || user.avatar_id || 'vanguard-01',
@@ -939,28 +981,29 @@ router.post('/:id/squads', async (req, res) => {
       if (isUserInPlayers(tournament.currentPlayers || [], user._id.toString())) {
         return res.status(400).json({ error: 'You already joined this tournament' });
       }
-      if ((tournament.currentPlayers || []).length >= tournament.total_slots) {
+      if (getReservedSquadSlots(tournament) + getSquadSize(tournament) > Number(tournament.total_slots || tournament.totalSlots || 0)) {
         return res.status(400).json({ error: 'Tournament is full' });
       }
       if ((tournament.squads || []).some((squad) => squad.name.toLowerCase() === squadName.toLowerCase())) {
         return res.status(400).json({ error: 'Squad name already exists' });
       }
-      if (findSquadByPassword(tournament.squads || [], squadPassword)) {
-        return res.status(400).json({ error: 'Squad password already exists' });
-      }
-
-      applyJoinCharge(user, tournament, req.body);
+      const totalEntryFee = getSquadEntryFee(tournament);
+      applyJoinCharge(user, tournament, { joinMethod: 'wallet' }, totalEntryFee);
       tournament.squads.push({
         name: squadName,
         squad_code: squadCode,
         squad_password: squadPassword,
         captain: user._id,
-        members: [user._id]
+        members: [user._id],
+        total_entry_fee: totalEntryFee,
+        entry_paid: true,
+        status: getSquadSize(tournament) === 1 ? 'complete' : 'forming',
+        locked_at: getSquadSize(tournament) === 1 ? new Date() : undefined
       });
       const squad = tournament.squads[tournament.squads.length - 1];
       tournament.currentPlayers.push(user._id);
       tournament.joined_count = tournament.currentPlayers.length;
-      upsertParticipantProfile(tournament, user._id.toString(), joinProfile, { squad_id: squad?._id?.toString?.() || '' });
+      upsertParticipantProfile(tournament, user._id.toString(), { ...joinProfile, join_method: 'squad_captain' }, { squad_id: squad?._id?.toString?.() || '' });
       saveUserGameProfile(user, tournament, joinProfile);
       await Promise.all([tournament.save(), user.save()]);
 
@@ -980,11 +1023,11 @@ router.post('/:id/squads', async (req, res) => {
     if (normalizeStatus(tournament.status) !== 'active') return res.status(400).json({ error: 'Tournament is not open for joining' });
     if (!tournament.currentPlayers) tournament.currentPlayers = [];
     if (isUserInPlayers(tournament.currentPlayers, userId)) return res.status(400).json({ error: 'You already joined this tournament' });
-    if (tournament.currentPlayers.length >= tournament.total_slots) return res.status(400).json({ error: 'Tournament is full' });
+    if (getReservedSquadSlots(tournament) + getSquadSize(tournament) > Number(tournament.total_slots || tournament.totalSlots || 0)) return res.status(400).json({ error: 'Tournament is full' });
     if (squads.some((squad) => squad.name?.toLowerCase() === squadName.toLowerCase())) return res.status(400).json({ error: 'Squad name already exists' });
-    if (findSquadByPassword(squads, squadPassword)) return res.status(400).json({ error: 'Squad password already exists' });
 
-    applyJoinCharge(user, tournament, req.body);
+    const totalEntryFee = getSquadEntryFee(tournament);
+    applyJoinCharge(user, tournament, { joinMethod: 'wallet' }, totalEntryFee);
     squads.push({
       _id: `offline_squad_${Date.now()}`,
       name: squadName,
@@ -992,12 +1035,16 @@ router.post('/:id/squads', async (req, res) => {
       squad_password: squadPassword,
       captain: userId,
       members: [userId],
+      total_entry_fee: totalEntryFee,
+      entry_paid: true,
+      status: getSquadSize(tournament) === 1 ? 'complete' : 'forming',
+      locked_at: getSquadSize(tournament) === 1 ? new Date().toISOString() : undefined,
       createdAt: new Date().toISOString()
     });
     const squad = squads[squads.length - 1];
     tournament.currentPlayers.push(userId);
     tournament.joined_count = tournament.currentPlayers.length;
-    upsertParticipantProfile(tournament, userId, joinProfile, { user: userId, squad_id: squad._id });
+    upsertParticipantProfile(tournament, userId, { ...joinProfile, join_method: 'squad_captain' }, { user: userId, squad_id: squad._id });
     saveUserGameProfile(user, tournament, joinProfile);
     await persistStore();
     return res.status(201).json(serializeTournament(tournament));
@@ -1009,13 +1056,13 @@ router.post('/:id/squads', async (req, res) => {
 const handleJoinSquadByPassword = async (req, res) => {
   try {
     const userId = req.body.userId || req.body._id || req.body.id;
-    const squadPassword = normalizeSquadPassword(req.body.squadPassword || req.body.squad_password);
+    const squadCode = normalizeSquadCode(req.body.squadCode || req.body.squad_code || req.body.squadPassword || req.body.squad_password);
 
     if (!userId) {
       return res.status(400).json({ error: 'User ID is required' });
     }
-    if (!squadPassword) {
-      return res.status(400).json({ error: 'Squad password is required' });
+    if (!squadCode) {
+      return res.status(400).json({ error: 'Squad code is required' });
     }
 
     if (isDBConnected()) {
@@ -1035,13 +1082,9 @@ const handleJoinSquadByPassword = async (req, res) => {
       if (isUserInPlayers(tournament.currentPlayers || [], user._id.toString()) || isUserInAnySquad(tournament.squads || [], user._id.toString())) {
         return res.status(400).json({ error: 'You already joined this tournament' });
       }
-      if ((tournament.currentPlayers || []).length >= tournament.total_slots) {
-        return res.status(400).json({ error: 'Tournament is full' });
-      }
-
-      const squad = findSquadByPassword(tournament.squads || [], squadPassword);
+      const squad = findSquadByCode(tournament.squads || [], squadCode) || findSquadByPassword(tournament.squads || [], squadCode);
       if (!squad) {
-        return res.status(404).json({ error: 'Squad password is invalid' });
+        return res.status(404).json({ error: 'Squad code is invalid' });
       }
       if ((squad.members || []).some((member) => getUserId(member) === user._id.toString())) {
         return res.status(400).json({ error: 'You already joined this squad' });
@@ -1050,11 +1093,11 @@ const handleJoinSquadByPassword = async (req, res) => {
         return res.status(400).json({ error: 'Squad is already full' });
       }
 
-      applyJoinCharge(user, tournament, req.body);
       squad.members.push(user._id);
+      syncSquadStatus(tournament, squad);
       tournament.currentPlayers.push(user._id);
       tournament.joined_count = tournament.currentPlayers.length;
-      upsertParticipantProfile(tournament, user._id.toString(), joinProfile, { squad_id: squad._id.toString() });
+      upsertParticipantProfile(tournament, user._id.toString(), { ...joinProfile, join_method: 'squad_invite' }, { squad_id: squad._id.toString() });
       saveUserGameProfile(user, tournament, joinProfile);
       await Promise.all([tournament.save(), user.save()]);
 
@@ -1073,18 +1116,17 @@ const handleJoinSquadByPassword = async (req, res) => {
     if (!tournament.currentPlayers) tournament.currentPlayers = [];
     const squads = normalizeSquadsForOffline(tournament);
     if (isUserInPlayers(tournament.currentPlayers, userId) || isUserInAnySquad(squads, userId)) return res.status(400).json({ error: 'You already joined this tournament' });
-    if (tournament.currentPlayers.length >= tournament.total_slots) return res.status(400).json({ error: 'Tournament is full' });
 
-    const squad = findSquadByPassword(squads, squadPassword);
-    if (!squad) return res.status(404).json({ error: 'Squad password is invalid' });
+    const squad = findSquadByCode(squads, squadCode) || findSquadByPassword(squads, squadCode);
+    if (!squad) return res.status(404).json({ error: 'Squad code is invalid' });
     if ((squad.members || []).some((member) => getUserId(member) === userId)) return res.status(400).json({ error: 'You already joined this squad' });
     if (getRemainingSquadSlots(tournament, squad) <= 0) return res.status(400).json({ error: 'Squad is already full' });
 
-    applyJoinCharge(user, tournament, req.body);
     squad.members = [...(squad.members || []), userId];
+    syncSquadStatus(tournament, squad);
     tournament.currentPlayers.push(userId);
     tournament.joined_count = tournament.currentPlayers.length;
-    upsertParticipantProfile(tournament, userId, joinProfile, { user: userId, squad_id: squad._id || squad.id || '' });
+    upsertParticipantProfile(tournament, userId, { ...joinProfile, join_method: 'squad_invite' }, { user: userId, squad_id: squad._id || squad.id || '' });
     saveUserGameProfile(user, tournament, joinProfile);
     await persistStore();
     return res.json(serializeTournament(tournament));
@@ -1120,9 +1162,6 @@ router.post('/:id/squads/:squadId/join', async (req, res) => {
       if (isUserInPlayers(tournament.currentPlayers || [], user._id.toString()) || isUserInAnySquad(tournament.squads || [], user._id.toString())) {
         return res.status(400).json({ error: 'You already joined this tournament' });
       }
-      if ((tournament.currentPlayers || []).length >= tournament.total_slots) {
-        return res.status(400).json({ error: 'Tournament is full' });
-      }
       const squad = tournament.squads.id(req.params.squadId);
       if (!squad) {
         return res.status(404).json({ error: 'Squad not found' });
@@ -1131,11 +1170,11 @@ router.post('/:id/squads/:squadId/join', async (req, res) => {
         return res.status(400).json({ error: 'Squad is already full' });
       }
 
-      applyJoinCharge(user, tournament, req.body);
       squad.members.push(user._id);
+      syncSquadStatus(tournament, squad);
       tournament.currentPlayers.push(user._id);
       tournament.joined_count = tournament.currentPlayers.length;
-      upsertParticipantProfile(tournament, user._id.toString(), joinProfile, { squad_id: squad._id.toString() });
+      upsertParticipantProfile(tournament, user._id.toString(), { ...joinProfile, join_method: 'squad_invite' }, { squad_id: squad._id.toString() });
       saveUserGameProfile(user, tournament, joinProfile);
       await Promise.all([tournament.save(), user.save()]);
 
@@ -1154,19 +1193,53 @@ router.post('/:id/squads/:squadId/join', async (req, res) => {
     if (!tournament.currentPlayers) tournament.currentPlayers = [];
     const squads = normalizeSquadsForOffline(tournament);
     if (isUserInPlayers(tournament.currentPlayers, userId) || isUserInAnySquad(squads, userId)) return res.status(400).json({ error: 'You already joined this tournament' });
-    if (tournament.currentPlayers.length >= tournament.total_slots) return res.status(400).json({ error: 'Tournament is full' });
     const squad = squads.find((item) => item._id === req.params.squadId || item.id === req.params.squadId);
     if (!squad) return res.status(404).json({ error: 'Squad not found' });
     if (getRemainingSquadSlots(tournament, squad) <= 0) return res.status(400).json({ error: 'Squad is already full' });
 
-    applyJoinCharge(user, tournament, req.body);
     squad.members = [...(squad.members || []), userId];
+    syncSquadStatus(tournament, squad);
     tournament.currentPlayers.push(userId);
     tournament.joined_count = tournament.currentPlayers.length;
-    upsertParticipantProfile(tournament, userId, joinProfile, { user: userId, squad_id: squad._id || squad.id || '' });
+    upsertParticipantProfile(tournament, userId, { ...joinProfile, join_method: 'squad_invite' }, { user: userId, squad_id: squad._id || squad.id || '' });
     saveUserGameProfile(user, tournament, joinProfile);
     await persistStore();
     return res.json(serializeTournament(tournament));
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+router.delete('/:id/squads/:squadId', async (req, res) => {
+  try {
+    if (isDBConnected()) {
+      const tournament = await Tournament.findById(req.params.id);
+      if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
+      const squad = (tournament.squads || []).find((item) => getSquadId(item) === req.params.squadId);
+      if (!squad) return res.status(404).json({ error: 'Squad not found' });
+      const memberIds = new Set((squad.members || []).map((member) => getUserId(member)).filter(Boolean));
+      tournament.squads = (tournament.squads || []).filter((item) => getSquadId(item) !== req.params.squadId);
+      tournament.currentPlayers = (tournament.currentPlayers || []).filter((playerId) => !memberIds.has(getUserId(playerId)));
+      tournament.participant_profiles = (tournament.participant_profiles || []).filter((profile) => !memberIds.has(getUserId(profile.user || profile.userId)));
+      tournament.joined_count = tournament.currentPlayers.length;
+      await tournament.save();
+      const updatedTournament = await getTournamentById(tournament._id);
+      return res.json({ message: 'Squad removed', tournament: serializeTournament(updatedTournament) });
+    }
+
+    const store = await getStore();
+    const tournament = getOfflineTournament(store, req.params.id);
+    if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
+    const squads = normalizeSquadsForOffline(tournament);
+    const squad = squads.find((item) => getSquadId(item) === req.params.squadId);
+    if (!squad) return res.status(404).json({ error: 'Squad not found' });
+    const memberIds = new Set((squad.members || []).map(getUserId).filter(Boolean));
+    tournament.squads = squads.filter((item) => getSquadId(item) !== req.params.squadId);
+    tournament.currentPlayers = (tournament.currentPlayers || []).filter((playerId) => !memberIds.has(getUserId(playerId)));
+    tournament.participant_profiles = (tournament.participant_profiles || []).filter((profile) => !memberIds.has(getUserId(profile.user || profile.userId)));
+    tournament.joined_count = tournament.currentPlayers.length;
+    await persistStore();
+    return res.json({ message: 'Squad removed', tournament: serializeTournament(hydrateOfflineTournament(store, tournament)) });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -1190,6 +1263,7 @@ router.post('/:id/declare-winner', async (req, res) => {
         if (!winningSquad) return res.status(404).json({ error: 'Winning squad not found' });
         const memberIds = (winningSquad.members || []).map((member) => member.toString());
         if (memberIds.length === 0) return res.status(400).json({ error: 'Winning squad has no members' });
+        if (memberIds.length < getSquadSize(tournament)) return res.status(400).json({ error: 'Only completed squads can be declared winners' });
 
         const prizeBreakdown = calculatePrizeBreakdown(tournament);
         const firstPrize = prizeBreakdown.firstPrize;
@@ -1326,6 +1400,7 @@ router.post('/:id/declare-winner', async (req, res) => {
       if (!squad) return res.status(404).json({ error: 'Winning squad not found' });
       const memberIds = (squad.members || []).map(getUserId).filter(Boolean);
       if (memberIds.length === 0) return res.status(400).json({ error: 'Winning squad has no members' });
+      if (memberIds.length < getSquadSize(tournament)) return res.status(400).json({ error: 'Only completed squads can be declared winners' });
       const prizeBreakdown = calculatePrizeBreakdown(tournament);
       const rewardPerMember = Math.floor(prizeBreakdown.firstPrize / memberIds.length);
       if (rewardPerMember <= 0) return res.status(400).json({ error: 'Reward per member is zero' });
@@ -1552,13 +1627,25 @@ router.post('/:id/refund', async (req, res) => {
       if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
       if (tournament.refund_processed) return res.status(400).json({ error: 'Refund already processed for this tournament' });
 
-      const playerIds = (tournament.currentPlayers || []).map((playerId) => playerId.toString());
-      if (playerIds.length > 0 && tournament.entry_fee > 0) {
-        const users = await User.find({ _id: { $in: playerIds } });
+      const squadMatch = isSquadTournament(tournament);
+      const refundTargets = squadMatch
+        ? (tournament.squads || []).map((squad) => ({
+          userId: getUserId(squad.captain),
+          amount: Number(squad.total_entry_fee || getSquadEntryFee(tournament))
+        })).filter((item) => item.userId && item.amount > 0)
+        : (tournament.currentPlayers || []).map((playerId) => ({
+          userId: playerId.toString(),
+          amount: Number(tournament.entry_fee || 0)
+        })).filter((item) => item.userId && item.amount > 0);
+
+      if (refundTargets.length > 0) {
+        const users = await User.find({ _id: { $in: refundTargets.map((item) => item.userId) } });
+        const refundByUserId = new Map(refundTargets.map((item) => [item.userId, item.amount]));
         await Promise.all(users.map(async (user) => {
-          user.walletBalance = (user.walletBalance || 0) + tournament.entry_fee;
+          const refundAmount = refundByUserId.get(user._id.toString()) || 0;
+          user.walletBalance = (user.walletBalance || 0) + refundAmount;
           user.notifications.push({
-            message: `Tournament refund added Rs.${tournament.entry_fee} for ${tournament.title || tournament.name || 'dismissed match'}`,
+            message: `${squadMatch ? 'Squad captain refund' : 'Tournament refund'} added Rs.${refundAmount} for ${tournament.title || tournament.name || 'dismissed match'}`,
             type: 'wallet',
             link: '/wallet',
             read: false,
@@ -1570,7 +1657,7 @@ router.post('/:id/refund', async (req, res) => {
         await Refund.insertMany(users.map((user) => ({
           userId: user._id,
           tournamentId: tournament._id,
-          amount: tournament.entry_fee,
+          amount: refundByUserId.get(user._id.toString()) || 0,
           reason: buildRefundMessage(tournament),
           status: 'approved'
         })));
@@ -1583,7 +1670,7 @@ router.post('/:id/refund', async (req, res) => {
       tournament.refunded_at = new Date();
       await tournament.save();
       const updatedTournament = await getTournamentById(tournament._id);
-      return res.json({ message: 'All joined users refunded', tournament: serializeTournament(updatedTournament) });
+      return res.json({ message: squadMatch ? 'Squad captain refunds processed' : 'All joined users refunded', tournament: serializeTournament(updatedTournament) });
     }
 
     const store = await getStore();
@@ -1591,24 +1678,34 @@ router.post('/:id/refund', async (req, res) => {
     if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
     if (tournament.refund_processed) return res.status(400).json({ error: 'Refund already processed for this tournament' });
 
-    const playerIds = (tournament.currentPlayers || []).map((playerId) => getUserId(playerId));
-    for (const playerId of playerIds) {
-      const user = getOfflineUser(store, playerId);
+    const squadMatch = isSquadTournament(tournament);
+    const refundTargets = squadMatch
+      ? normalizeSquadsForOffline(tournament).map((squad) => ({
+        userId: getUserId(squad.captain),
+        amount: Number(squad.total_entry_fee || getSquadEntryFee(tournament))
+      })).filter((item) => item.userId && item.amount > 0)
+      : (tournament.currentPlayers || []).map((playerId) => ({
+        userId: getUserId(playerId),
+        amount: Number(tournament.entry_fee || 0)
+      })).filter((item) => item.userId && item.amount > 0);
+
+    for (const refundTarget of refundTargets) {
+      const user = getOfflineUser(store, refundTarget.userId);
       if (!user) continue;
-      user.walletBalance = (user.walletBalance || 0) + (tournament.entry_fee || 0);
+      user.walletBalance = (user.walletBalance || 0) + refundTarget.amount;
       user.notifications = user.notifications || [];
       user.notifications.push({
-        _id: `offline_note_${Date.now()}_${playerId}`,
-        message: `Tournament refund added Rs.${tournament.entry_fee || 0} for ${tournament.title || tournament.name || 'dismissed match'}`,
+        _id: `offline_note_${Date.now()}_${refundTarget.userId}`,
+        message: `${squadMatch ? 'Squad captain refund' : 'Tournament refund'} added Rs.${refundTarget.amount} for ${tournament.title || tournament.name || 'dismissed match'}`,
         read: false,
         createdAt: new Date().toISOString()
       });
       store.refunds = store.refunds || [];
       store.refunds.push({
         _id: `offline_ref_${store.nextIds.refund++}`,
-        userId: playerId,
+        userId: refundTarget.userId,
         tournamentId: tournament._id,
-        amount: tournament.entry_fee || 0,
+        amount: refundTarget.amount,
         reason: buildRefundMessage(tournament),
         status: 'approved',
         createdAt: new Date().toISOString()
@@ -1621,7 +1718,7 @@ router.post('/:id/refund', async (req, res) => {
     tournament.refundProcessed = true;
     tournament.refunded_at = new Date().toISOString();
     await persistStore();
-    return res.json({ message: 'All joined users refunded', tournament: serializeTournament(hydrateOfflineTournament(store, tournament)) });
+    return res.json({ message: squadMatch ? 'Squad captain refunds processed' : 'All joined users refunded', tournament: serializeTournament(hydrateOfflineTournament(store, tournament)) });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

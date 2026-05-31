@@ -10,10 +10,24 @@ export const getJoinedCount = (tournament) => Number(
   ?? 0
 );
 
+export const getTotalCollection = (tournament) => {
+  const entryFee = Number(tournament?.entry_fee ?? tournament?.entryFee ?? 0);
+  const squadMatch = isSquadTournament(tournament);
+  if (!squadMatch) {
+    return entryFee * getJoinedCount(tournament);
+  }
+
+  const squadSize = Number(tournament?.squad_size ?? tournament?.squadSize ?? 4);
+  const squads = Array.isArray(tournament?.squads) ? tournament.squads : [];
+  return squads.reduce((sum, squad) => (
+    sum + Number(squad?.total_entry_fee ?? squad?.totalEntryFee ?? entryFee * squadSize)
+  ), 0);
+};
+
 export const calculatePrizeBreakdown = (tournament) => {
   const entryFee = Number(tournament?.entry_fee ?? tournament?.entryFee ?? 0);
   const joinedCount = getJoinedCount(tournament);
-  const totalCollection = entryFee * joinedCount;
+  const totalCollection = getTotalCollection(tournament);
   const basePrize = Number(tournament?.base_prize ?? tournament?.basePrize ?? tournament?.prizePool ?? 0);
   const totalPrizePool = basePrize + totalCollection;
   const squadMatch = isSquadTournament(tournament);
