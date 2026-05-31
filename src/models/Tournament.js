@@ -9,10 +9,24 @@ const tournamentSchema = new mongoose.Schema({
   matchType: String,
   squad_size: { type: Number, default: 1 },
   squadSize: Number,
+  entry_type: { type: String, enum: ['paid', 'free'], default: 'paid' },
+  entryType: String,
   entry_fee: { type: Number, default: 0 },
   entryFee: Number,
   base_prize: { type: Number, default: 0 },
   prizePool: { type: Number, default: 0 },
+  prize_distribution_type: { type: String, enum: ['percentage', 'fixed'], default: 'percentage' },
+  prizeDistributionType: String,
+  winner_count: { type: Number, default: 3 },
+  winnerCount: Number,
+  prize_display_note: { type: String, default: '' },
+  prizeDisplayNote: String,
+  prize_distribution: [{
+    place: Number,
+    label: String,
+    percentage: { type: Number, default: 0 },
+    amount: { type: Number, default: 0 }
+  }],
   first_prize_percentage: { type: Number, default: 50, min: 1, max: 100 },
   firstPrizePercentage: Number,
   solo_first_place_percentage: { type: Number, default: 60, min: 0, max: 100 },
@@ -56,6 +70,15 @@ const tournamentSchema = new mongoose.Schema({
   third_winner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   winner_squad: String,
   winner_squad_name: String,
+  winner_entries: [{
+    place: Number,
+    label: String,
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    squad_id: String,
+    squad_name: String,
+    amount: { type: Number, default: 0 },
+    reward_per_member: { type: Number, default: 0 }
+  }],
   winner_prize: { type: Number, default: 0 },
   total_collection: { type: Number, default: 0 },
   reward_pool: { type: Number, default: 0 },
@@ -93,11 +116,28 @@ tournamentSchema.pre('save', function syncTournamentFields(next) {
   }
   this.squadSize = this.squad_size;
 
+  this.entry_type = this.entry_type || this.entryType || (Number(this.entry_fee ?? this.entryFee ?? 0) > 0 ? 'paid' : 'free');
+  this.entryType = this.entry_type;
   this.entry_fee = Number(this.entry_fee ?? this.entryFee ?? 0);
+  if (this.entry_type === 'free') {
+    this.entry_fee = 0;
+  }
   this.entryFee = this.entry_fee;
   this.base_prize = Number(this.base_prize ?? this.basePrize ?? this.prizePool ?? 0);
   this.basePrize = this.base_prize;
   this.prizePool = this.base_prize;
+  this.prize_distribution_type = this.prize_distribution_type || this.prizeDistributionType || (this.entry_type === 'free' ? 'fixed' : 'percentage');
+  this.prizeDistributionType = this.prize_distribution_type;
+  this.winner_count = Number(this.winner_count ?? this.winnerCount ?? (Array.isArray(this.prize_distribution) && this.prize_distribution.length ? this.prize_distribution.length : 3));
+  this.winnerCount = this.winner_count;
+  this.prize_display_note = this.prize_display_note ?? this.prizeDisplayNote ?? '';
+  this.prizeDisplayNote = this.prize_display_note;
+  this.prize_distribution = Array.isArray(this.prize_distribution) ? this.prize_distribution.map((item, index) => ({
+    place: Number(item.place || index + 1),
+    label: item.label || `${index + 1}${index === 0 ? 'st' : index === 1 ? 'nd' : index === 2 ? 'rd' : 'th'} Prize`,
+    percentage: Number(item.percentage || 0),
+    amount: Number(item.amount || 0)
+  })) : [];
   this.first_prize_percentage = Math.min(100, Math.max(1, Number(this.first_prize_percentage ?? this.firstPrizePercentage ?? 50)));
   this.firstPrizePercentage = this.first_prize_percentage;
   this.solo_first_place_percentage = Number(this.solo_first_place_percentage ?? 60);

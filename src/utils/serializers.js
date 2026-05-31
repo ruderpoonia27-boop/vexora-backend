@@ -141,7 +141,28 @@ export const serializeTournament = (tournament) => {
   const joinedCount = players.length || source.joined_count || source.joinedCount || 0;
   const gameName = source.name || source.game_type || source.gameType || 'BGMI';
   const entryFee = Number(source.entry_fee ?? source.entryFee ?? 0);
+  const entryType = source.entry_type || source.entryType || (entryFee > 0 ? 'paid' : 'free');
   const basePrize = Number(source.base_prize ?? source.basePrize ?? source.prizePool ?? 0);
+  const prizeDistributionType = source.prize_distribution_type || source.prizeDistributionType || (entryType === 'free' ? 'fixed' : 'percentage');
+  const prizeDistribution = (source.prize_distribution || source.prizeDistribution || []).map((item, index) => ({
+    place: Number(item.place || index + 1),
+    label: item.label || `${index + 1}${index === 0 ? 'st' : index === 1 ? 'nd' : index === 2 ? 'rd' : 'th'} Prize`,
+    percentage: Number(item.percentage || 0),
+    amount: Number(item.amount || 0)
+  }));
+  const winnerEntries = (source.winner_entries || source.winnerEntries || []).map((item, index) => ({
+    place: Number(item.place || index + 1),
+    label: item.label || `${index + 1}${index === 0 ? 'st' : index === 1 ? 'nd' : index === 2 ? 'rd' : 'th'} Prize`,
+    user: serializePlayer(item.user),
+    userId: asId(item.user || item.userId),
+    squad_id: item.squad_id || item.squadId || '',
+    squadId: item.squad_id || item.squadId || '',
+    squad_name: item.squad_name || item.squadName || '',
+    squadName: item.squad_name || item.squadName || '',
+    amount: Number(item.amount || 0),
+    reward_per_member: Number(item.reward_per_member || item.rewardPerMember || 0),
+    rewardPerMember: Number(item.reward_per_member || item.rewardPerMember || 0)
+  }));
   const firstPrizePercentage = Number(source.first_prize_percentage ?? source.firstPrizePercentage ?? 50);
   const totalSlots = Number(source.total_slots ?? source.totalSlots ?? 1);
   const startTime = source.match_start_time || source.startTime || null;
@@ -163,7 +184,8 @@ export const serializeTournament = (tournament) => {
   const totalCollection = matchType === 'squad'
     ? squads.reduce((sum, squad) => sum + Number(squad.totalEntryFee || squadEntryFee || 0), 0)
     : entryFee * joinedCount;
-  const publicPrizePool = basePrize + totalCollection;
+  const fixedPrizePool = prizeDistribution.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const publicPrizePool = prizeDistributionType === 'fixed' && fixedPrizePool > 0 ? fixedPrizePool : basePrize + totalCollection;
 
   return {
     ...source,
@@ -177,11 +199,21 @@ export const serializeTournament = (tournament) => {
     matchType,
     squad_size: matchType === 'solo' ? 1 : squadSize,
     squadSize: matchType === 'solo' ? 1 : squadSize,
+    entry_type: entryType,
+    entryType,
     entry_fee: entryFee,
     entryFee,
     base_prize: basePrize,
     basePrize,
     prizePool: basePrize,
+    prize_distribution_type: prizeDistributionType,
+    prizeDistributionType,
+    winner_count: Number(source.winner_count ?? source.winnerCount ?? (prizeDistribution.length || 3)),
+    winnerCount: Number(source.winner_count ?? source.winnerCount ?? (prizeDistribution.length || 3)),
+    prize_display_note: source.prize_display_note || source.prizeDisplayNote || '',
+    prizeDisplayNote: source.prize_display_note || source.prizeDisplayNote || '',
+    prize_distribution: prizeDistribution,
+    prizeDistribution,
     public_prize_pool: publicPrizePool,
     publicPrizePool,
     total_prize_pool: publicPrizePool,
@@ -230,6 +262,8 @@ export const serializeTournament = (tournament) => {
     winner_squad_name: source.winner_squad_name || source.winnerSquadName || winnerSquad?.name || '',
     winnerSquadName: source.winner_squad_name || source.winnerSquadName || winnerSquad?.name || '',
     winnerSquad,
+    winner_entries: winnerEntries,
+    winnerEntries,
     winner_prize: Number(source.winner_prize || 0),
     winnerPrize: Number(source.winner_prize || 0),
     total_collection: Number(source.total_collection || source.totalCollection || totalCollection || 0),
