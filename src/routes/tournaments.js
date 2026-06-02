@@ -344,11 +344,16 @@ const getWinnerEntriesFromRequest = (body, tournament) => {
     : [];
 
   if (requested.length) {
-    return prizeEntries.map((prizeEntry, index) => ({
-      ...prizeEntry,
-      userId: requested[index]?.userId || requested[index]?.user_id || '',
-      squadId: requested[index]?.squadId || requested[index]?.squad_id || ''
-    }));
+    return requested.map((requestEntry, index) => {
+      const requestedPlace = Number(requestEntry?.place || requestEntry?.rank || index + 1);
+      const prizeEntry = prizeEntries.find((entry) => Number(entry.place) === requestedPlace) || prizeEntries[index] || prizeEntries[0];
+      return {
+        ...prizeEntry,
+        place: prizeEntry?.place ?? requestedPlace,
+        userId: requestEntry?.userId || requestEntry?.user_id || '',
+        squadId: requestEntry?.squadId || requestEntry?.squad_id || ''
+      };
+    }).filter((entry) => entry?.amount > 0);
   }
 
   return prizeEntries.slice(0, 3).map((prizeEntry, index) => {
@@ -1346,17 +1351,17 @@ router.post('/:id/declare-winner', async (req, res) => {
       if (winnerEntries.length === 0) return res.status(400).json({ error: 'No payable prize entries configured' });
 
       if (isSquadTournament(tournament)) {
-        const squadIds = winnerEntries.map((entry) => String(entry.squadId || '')).filter(Boolean);
-        if (squadIds.length !== winnerEntries.length) return res.status(400).json({ error: 'Select a squad for every prize place' });
+        const selectedWinnerEntries = winnerEntries.filter((entry) => String(entry.squadId || '').trim());
+        if (selectedWinnerEntries.length === 0) return res.status(400).json({ error: 'Select at least one squad to declare a winner' });
+        const squadIds = selectedWinnerEntries.map((entry) => String(entry.squadId || '')).filter(Boolean);
         if (new Set(squadIds).size !== squadIds.length) return res.status(400).json({ error: 'Each winning position must use a different squad' });
 
         const resolvedEntries = [];
-        for (const entry of winnerEntries) {
+        for (const entry of selectedWinnerEntries) {
           const winningSquad = (tournament.squads || []).find((squad) => getSquadId(squad) === String(entry.squadId));
           if (!winningSquad) return res.status(404).json({ error: 'Winning squad not found' });
           const memberIds = (winningSquad.members || []).map((member) => member.toString());
           if (memberIds.length === 0) return res.status(400).json({ error: 'Winning squad has no members' });
-          if (memberIds.length < getSquadSize(tournament)) return res.status(400).json({ error: 'Only completed squads can be declared winners' });
           const rewardPerMember = Math.floor(entry.amount / memberIds.length);
           if (rewardPerMember <= 0) return res.status(400).json({ error: 'Reward per member is zero' });
 
@@ -1425,8 +1430,9 @@ router.post('/:id/declare-winner', async (req, res) => {
         return res.json({ message: 'Winning squad declared and rewards credited', tournament: serializeTournament(updatedTournament) });
       }
 
-      const winnerIds = winnerEntries.map((entry) => String(entry.userId || '')).filter(Boolean);
-      if (winnerIds.length !== winnerEntries.length) return res.status(400).json({ error: 'Select a player for every prize place' });
+      const selectedWinnerEntries = winnerEntries.filter((entry) => String(entry.userId || '').trim());
+      if (selectedWinnerEntries.length === 0) return res.status(400).json({ error: 'Select at least one player to declare a winner' });
+      const winnerIds = selectedWinnerEntries.map((entry) => String(entry.userId || '')).filter(Boolean);
       if (new Set(winnerIds).size !== winnerIds.length) {
         return res.status(400).json({ error: 'Each winning position must be a different player' });
       }
@@ -1436,7 +1442,7 @@ router.post('/:id/declare-winner', async (req, res) => {
       }
       const winners = await User.find({ _id: { $in: winnerIds } });
       const winnersById = new Map(winners.map((winner) => [winner._id.toString(), winner]));
-      for (const prizeEntry of winnerEntries) {
+      for (const prizeEntry of selectedWinnerEntries) {
         const winner = winnersById.get(String(prizeEntry.userId));
         if (!winner) return res.status(404).json({ error: 'Winner not found' });
         winner.walletBalance = (winner.walletBalance || 0) + prizeEntry.amount;
@@ -1464,17 +1470,17 @@ router.post('/:id/declare-winner', async (req, res) => {
         });
       }
 
-      tournament.winner = winnerEntries[0].userId;
-      tournament.second_winner = winnerEntries[1]?.userId || undefined;
-      tournament.third_winner = winnerEntries[2]?.userId || undefined;
-      tournament.winner_entries = winnerEntries.map((entry) => ({
+      tournament.winner = selectedWinnerEntries.find((entry) => Number(entry.place) === 1)?.userId || selectedWinnerEntries[0].userId;
+      tournament.second_winner = selectedWinnerEntries.find((entry) => Number(entry.place) === 2)?.userId || undefined;
+      tournament.third_winner = selectedWinnerEntries.find((entry) => Number(entry.place) === 3)?.userId || undefined;
+      tournament.winner_entries = selectedWinnerEntries.map((entry) => ({
         place: entry.place,
         label: entry.label,
         user: entry.userId,
         amount: entry.amount
       }));
       tournament.status = 'completed';
-      tournament.winner_prize = prizeBreakdown.firstPrize;
+      tournament.winner_prize = selectedWinnerEntries.find((entry) => Number(entry.place) === 1)?.amount || selectedWinnerEntries[0].amount;
       tournament.first_place_prize = prizeBreakdown.firstPrize;
       tournament.second_place_prize = prizeBreakdown.secondPrize;
       tournament.third_place_prize = prizeBreakdown.thirdPrize;
@@ -1504,16 +1510,16 @@ router.post('/:id/declare-winner', async (req, res) => {
 
     if (isSquadTournament(tournament)) {
       const squads = normalizeSquadsForOffline(tournament);
-      const squadIds = winnerEntries.map((entry) => String(entry.squadId || '')).filter(Boolean);
-      if (squadIds.length !== winnerEntries.length) return res.status(400).json({ error: 'Select a squad for every prize place' });
+      const selectedWinnerEntries = winnerEntries.filter((entry) => String(entry.squadId || '').trim());
+      if (selectedWinnerEntries.length === 0) return res.status(400).json({ error: 'Select at least one squad to declare a winner' });
+      const squadIds = selectedWinnerEntries.map((entry) => String(entry.squadId || '')).filter(Boolean);
       if (new Set(squadIds).size !== squadIds.length) return res.status(400).json({ error: 'Each winning position must use a different squad' });
       const resolvedEntries = [];
-      for (const entry of winnerEntries) {
+      for (const entry of selectedWinnerEntries) {
         const squad = squads.find((item) => getSquadId(item) === String(entry.squadId));
         if (!squad) return res.status(404).json({ error: 'Winning squad not found' });
         const memberIds = (squad.members || []).map(getUserId).filter(Boolean);
         if (memberIds.length === 0) return res.status(400).json({ error: 'Winning squad has no members' });
-        if (memberIds.length < getSquadSize(tournament)) return res.status(400).json({ error: 'Only completed squads can be declared winners' });
         const rewardPerMember = Math.floor(entry.amount / memberIds.length);
         if (rewardPerMember <= 0) return res.status(400).json({ error: 'Reward per member is zero' });
         for (const memberId of memberIds) {
@@ -1563,7 +1569,7 @@ router.post('/:id/declare-winner', async (req, res) => {
       tournament.winner_squad_name = resolvedEntries[0].squad_name;
       tournament.winner_entries = resolvedEntries;
       tournament.status = 'completed';
-      tournament.winner_prize = prizeBreakdown.firstPrize;
+      tournament.winner_prize = resolvedEntries[0].amount;
       tournament.total_collection = prizeBreakdown.totalCollection;
       tournament.reward_pool = prizeBreakdown.rewardPool;
       tournament.platform_earnings = prizeBreakdown.platformEarnings;
@@ -1574,13 +1580,14 @@ router.post('/:id/declare-winner', async (req, res) => {
       return res.json({ message: 'Winning squad declared and rewards credited', tournament: serializeTournament(hydrateOfflineTournament(store, tournament)) });
     }
 
-    const winnerIds = winnerEntries.map((entry) => String(entry.userId || '')).filter(Boolean);
-    if (winnerIds.length !== winnerEntries.length) return res.status(400).json({ error: 'Select a player for every prize place' });
+    const selectedWinnerEntries = winnerEntries.filter((entry) => String(entry.userId || '').trim());
+    if (selectedWinnerEntries.length === 0) return res.status(400).json({ error: 'Select at least one player to declare a winner' });
+    const winnerIds = selectedWinnerEntries.map((entry) => String(entry.userId || '')).filter(Boolean);
     if (new Set(winnerIds).size !== winnerIds.length) return res.status(400).json({ error: 'Each winning position must be a different player' });
     if (!winnerIds.every((winnerId) => isUserInPlayers(tournament.currentPlayers || [], winnerId))) {
       return res.status(400).json({ error: 'Winners must be selected from joined users' });
     }
-    for (const prizeEntry of winnerEntries) {
+    for (const prizeEntry of selectedWinnerEntries) {
       const winner = getOfflineUser(store, prizeEntry.userId);
       if (!winner) return res.status(404).json({ error: 'Winner not found' });
       winner.walletBalance = (winner.walletBalance || 0) + prizeEntry.amount;
@@ -1609,17 +1616,17 @@ router.post('/:id/declare-winner', async (req, res) => {
         createdAt: new Date().toISOString()
       });
     }
-    tournament.winner = winnerEntries[0].userId;
-    tournament.second_winner = winnerEntries[1]?.userId || undefined;
-    tournament.third_winner = winnerEntries[2]?.userId || undefined;
-    tournament.winner_entries = winnerEntries.map((entry) => ({
+    tournament.winner = selectedWinnerEntries.find((entry) => Number(entry.place) === 1)?.userId || selectedWinnerEntries[0].userId;
+    tournament.second_winner = selectedWinnerEntries.find((entry) => Number(entry.place) === 2)?.userId || undefined;
+    tournament.third_winner = selectedWinnerEntries.find((entry) => Number(entry.place) === 3)?.userId || undefined;
+    tournament.winner_entries = selectedWinnerEntries.map((entry) => ({
       place: entry.place,
       label: entry.label,
       user: entry.userId,
       amount: entry.amount
     }));
     tournament.status = 'completed';
-    tournament.winner_prize = prizeBreakdown.firstPrize;
+    tournament.winner_prize = selectedWinnerEntries.find((entry) => Number(entry.place) === 1)?.amount || selectedWinnerEntries[0].amount;
     tournament.first_place_prize = prizeBreakdown.firstPrize;
     tournament.second_place_prize = prizeBreakdown.secondPrize;
     tournament.third_place_prize = prizeBreakdown.thirdPrize;
