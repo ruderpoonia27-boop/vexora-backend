@@ -21,6 +21,8 @@ const tournamentSchema = new mongoose.Schema({
   winnerCount: Number,
   prize_display_note: { type: String, default: '' },
   prizeDisplayNote: String,
+  prize_pool_visible: { type: Boolean, default: true },
+  prizePoolVisible: Boolean,
   prize_distribution: [{
     place: Number,
     label: String,
@@ -132,6 +134,8 @@ tournamentSchema.pre('save', function syncTournamentFields(next) {
   this.winnerCount = this.winner_count;
   this.prize_display_note = this.prize_display_note ?? this.prizeDisplayNote ?? '';
   this.prizeDisplayNote = this.prize_display_note;
+  this.prize_pool_visible = this.prize_pool_visible ?? this.prizePoolVisible ?? true;
+  this.prizePoolVisible = this.prize_pool_visible;
   this.prize_distribution = Array.isArray(this.prize_distribution) ? this.prize_distribution.map((item, index) => ({
     place: Number(item.place || index + 1),
     label: item.label || `${index + 1}${index === 0 ? 'st' : index === 1 ? 'nd' : index === 2 ? 'rd' : 'th'} Prize`,
@@ -179,3 +183,5 @@ tournamentSchema.pre('save', function syncTournamentFields(next) {
 });
 
 export default mongoose.model('Tournament', tournamentSchema);
+
+

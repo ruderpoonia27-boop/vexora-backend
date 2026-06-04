@@ -144,6 +144,7 @@ export const serializeTournament = (tournament) => {
   const entryType = source.entry_type || source.entryType || (entryFee > 0 ? 'paid' : 'free');
   const basePrize = Number(source.base_prize ?? source.basePrize ?? source.prizePool ?? 0);
   const prizeDistributionType = source.prize_distribution_type || source.prizeDistributionType || (entryType === 'free' ? 'fixed' : 'percentage');
+  const prizePoolVisible = source.prize_pool_visible ?? source.prizePoolVisible ?? true;
   const prizeDistribution = (source.prize_distribution || source.prizeDistribution || []).map((item, index) => ({
     place: Number(item.place || index + 1),
     label: item.label || `${index + 1}${index === 0 ? 'st' : index === 1 ? 'nd' : index === 2 ? 'rd' : 'th'} Prize`,
@@ -212,6 +213,8 @@ export const serializeTournament = (tournament) => {
     winnerCount: Number(source.winner_count ?? source.winnerCount ?? (prizeDistribution.length || 3)),
     prize_display_note: source.prize_display_note || source.prizeDisplayNote || '',
     prizeDisplayNote: source.prize_display_note || source.prizeDisplayNote || '',
+    prize_pool_visible: prizePoolVisible !== false,
+    prizePoolVisible: prizePoolVisible !== false,
     prize_distribution: prizeDistribution,
     prizeDistribution,
     public_prize_pool: publicPrizePool,
@@ -355,3 +358,5 @@ export const serializeRefund = (refund) => {
     created: source.createdAt
   };
 };
+
+
