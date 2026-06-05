@@ -5,6 +5,29 @@ import { isDBConnected } from '../config/database.js';
 import { getStore, persistStore } from '../config/fileStore.js';
 
 const router = express.Router();
+const defaultContactSettings = {
+  whatsappEnabled: true,
+  whatsappNumber: '',
+  telegramEnabled: false,
+  telegramLink: ''
+};
+
+const normalizeBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.trim().toLowerCase() !== 'false';
+  return Boolean(value);
+};
+
+const normalizeContactSettings = (source = {}, current = {}) => {
+  const incoming = source.contactSettings || source.contact_settings || source;
+  return {
+    whatsappEnabled: normalizeBoolean(incoming.whatsappEnabled ?? incoming.whatsapp_enabled, current.whatsappEnabled ?? true),
+    whatsappNumber: String(incoming.whatsappNumber ?? incoming.whatsapp_number ?? current.whatsappNumber ?? '').trim(),
+    telegramEnabled: normalizeBoolean(incoming.telegramEnabled ?? incoming.telegram_enabled, current.telegramEnabled ?? false),
+    telegramLink: String(incoming.telegramLink ?? incoming.telegram_link ?? current.telegramLink ?? '').trim()
+  };
+};
 
 const ensureOfflineSettings = async () => {
   const store = await getStore();
@@ -14,8 +37,10 @@ const ensureOfflineSettings = async () => {
     contact_email: 'support@nexusarena.com',
     min_deposit_amount: 10,
     min_withdraw_amount: 50,
+    contactSettings: defaultContactSettings,
     ...(store.settings || {})
   };
+  store.settings.contactSettings = normalizeContactSettings(store.settings.contactSettings, defaultContactSettings);
   store.paymentSettings = {
     _id: 'payment_settings_1',
     upi_id: 'tournament@upi',
@@ -58,11 +83,15 @@ router.get('/settings', async (req, res) => {
 
 router.put('/settings/:id', async (req, res) => {
   try {
+    const currentContactSettings = isDBConnected()
+      ? normalizeContactSettings((await getSettingsRecord()).contactSettings, defaultContactSettings)
+      : normalizeContactSettings((await ensureOfflineSettings()).settings?.contactSettings, defaultContactSettings);
     const payload = {
       platform_name: String(req.body.platform_name ?? req.body.platformName ?? 'Nexus Arena').trim() || 'Nexus Arena',
       contact_email: String(req.body.contact_email ?? req.body.contactEmail ?? 'support@nexusarena.com').trim() || 'support@nexusarena.com',
       min_deposit_amount: Number(req.body.min_deposit_amount),
-      min_withdraw_amount: Number(req.body.min_withdraw_amount)
+      min_withdraw_amount: Number(req.body.min_withdraw_amount),
+      contactSettings: normalizeContactSettings(req.body, currentContactSettings)
     };
 
     if (!payload.contact_email.includes('@')) {
@@ -121,7 +150,8 @@ router.put('/payment-settings/:id', async (req, res) => {
     }
 
     const store = await ensureOfflineSettings();
-    store.paymentSettings = { ...store.paymentSettings, ...payload };
+    store.settings.contactSettings = normalizeContactSettings(store.settings.contactSettings, defaultContactSettings);
+  store.paymentSettings = { ...store.paymentSettings, ...payload };
     await persistStore();
     return res.json(store.paymentSettings);
   } catch (error) {
@@ -130,3 +160,6 @@ router.put('/payment-settings/:id', async (req, res) => {
 });
 
 export default router;
+
+
+

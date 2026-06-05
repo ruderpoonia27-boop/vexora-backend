@@ -17,7 +17,13 @@ const defaultStore = {
   settings: {
     _id: 'settings_1',
     min_deposit_amount: 10,
-    min_withdraw_amount: 50
+    min_withdraw_amount: 50,
+    contactSettings: {
+      whatsappEnabled: true,
+      whatsappNumber: '',
+      telegramEnabled: false,
+      telegramLink: ''
+    }
   },
   paymentSettings: {
     _id: 'payment_settings_1',
@@ -53,3 +59,5 @@ export const persistStore = async () => {
   await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
   await fs.writeFile(DATA_FILE, JSON.stringify(store, null, 2));
 };
+
+
