@@ -15,9 +15,10 @@ import adminRoutes from './routes/admin.js';
 import settingsRoutes from './routes/settings.js';
 import referralRoutes from './routes/referrals.js';
 import announcementRoutes from './routes/announcements.js';
+import walletRoutes from './routes/wallet.js';
 import { isDBConnected } from './config/database.js';
 import { getStore, persistStore } from './config/fileStore.js';
-import { authenticate } from './middleware/auth.js';
+import { authenticate, getJwtSecret } from './middleware/auth.js';
 import { ensureUniqueReferralCodesForUsers } from './utils/referrals.js';
 
 dotenv.config();
@@ -31,6 +32,9 @@ process.on('unhandledRejection', (error) => {
 });
 
 const app = express();
+// Render and Vercel sit behind a proxy; trust it so req.ip is the real client (used for rate limits).
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
 const PORT = process.env.PORT || 34567;
 let startupPromise = null;
 
@@ -53,6 +57,7 @@ const getAllowedOrigins = () => (
 export const ensureStartup = () => {
   if (!startupPromise) {
     startupPromise = (async () => {
+      getJwtSecret();
       await connectDB();
       if (process.env.VERCEL && !isDBConnected()) {
         throw new Error('MongoDB connection is required on Vercel. Set MONGODB_URI and allow Vercel IP access in MongoDB Atlas.');
@@ -88,7 +93,15 @@ app.use(cors({
   },
   credentials: true
 }));
-app.use(express.json({ limit: '8mb' }));
+app.use(express.json({
+  limit: '8mb',
+  // Payment webhooks are signed over the exact bytes received.
+  verify: (req, res, buffer) => {
+    if (req.originalUrl.startsWith('/api/wallet/cashfree/webhook')) {
+      req.rawBody = buffer.toString('utf8');
+    }
+  }
+}));
 app.use(express.urlencoded({ extended: true, limit: '8mb' }));
 
 if (process.env.VERCEL) {
@@ -109,6 +122,7 @@ app.use('/api/withdrawals', withdrawalRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/announcements', announcementRoutes);
+app.use('/api/wallet', walletRoutes);
 app.use('/api', settingsRoutes);
 
 app.get('/', (req, res) => {
@@ -220,9 +234,14 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Makes DEFAULT_ADMIN_EMAIL an admin. A new admin account is only created when DEFAULT_ADMIN_PASSWORD is set.
 const seedAdmin = async () => {
-  const email = process.env.DEFAULT_ADMIN_EMAIL || 'ruderjaat01@gmail.com';
-  const password = process.env.DEFAULT_ADMIN_PASSWORD || 'admin123';
+  const email = (process.env.DEFAULT_ADMIN_EMAIL || '').trim().toLowerCase();
+  const password = process.env.DEFAULT_ADMIN_PASSWORD || '';
+  if (!email) {
+    console.warn('DEFAULT_ADMIN_EMAIL is not set; skipping admin setup.');
+    return;
+  }
 
   if (isDBConnected()) {
     const existing = await User.findOne({ email });
@@ -234,38 +253,46 @@ const seedAdmin = async () => {
       }
       return;
     }
+    if (password.length < 8) {
+      console.warn('Admin account not created: set DEFAULT_ADMIN_PASSWORD (at least 8 characters).');
+      return;
+    }
 
-    const hashed = await bcrypt.hash(password, 10);
     await User.create({
       email,
-      password: hashed,
+      password: await bcrypt.hash(password, 10),
       name: 'Admin',
       walletBalance: 0,
       isAdmin: true
     });
-    console.log(`Default Mongo admin created: ${email} / ${password}`);
+    console.log(`Admin account created for ${email}`);
     return;
   }
 
   const store = await getStore();
-  const existing = store.users.find(user => user.email === email);
+  const existing = store.users.find((user) => String(user.email || '').toLowerCase() === email);
   if (existing) {
-    existing.isAdmin = true;
-    await persistStore();
+    if (!existing.isAdmin) {
+      existing.isAdmin = true;
+      await persistStore();
+    }
+    return;
+  }
+  if (password.length < 8) {
+    console.warn('Admin account not created: set DEFAULT_ADMIN_PASSWORD (at least 8 characters).');
     return;
   }
 
-  const hashed = await bcrypt.hash(password, 10);
   store.users.push({
     _id: `offline_${store.nextIds.user++}`,
     email,
-    password: hashed,
+    password: await bcrypt.hash(password, 10),
     name: 'Admin',
     walletBalance: 0,
     isAdmin: true
   });
   await persistStore();
-  console.log(`Default offline admin created: ${email} / ${password}`);
+  console.log(`Offline admin account created for ${email}`);
 };
 
 const normalizeReferralCodes = async () => {

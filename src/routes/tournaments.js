@@ -8,8 +8,25 @@ import { getStore, persistStore } from '../config/fileStore.js';
 import { serializeTournament, serializeUser } from '../utils/serializers.js';
 import { ensureReferralStats } from '../utils/referrals.js';
 import { calculatePrizeBreakdown, isSquadTournament } from '../utils/prizes.js';
+import { authenticate, authorizeAdmin, optionalAuth } from '../middleware/auth.js';
+import { hideTournamentPrivateData } from '../utils/tournamentPrivacy.js';
 
 const router = express.Router();
+
+const adminOnly = [authenticate, authorizeAdmin];
+
+// Players act only as themselves: the logged-in user replaces any userId sent by the client.
+const asLoggedInPlayer = [
+  authenticate,
+  (req, res, next) => {
+    const userId = req.user._id.toString();
+    req.body = { ...(req.body || {}), userId, _id: userId, id: userId };
+    req.query.userId = userId;
+    next();
+  }
+];
+
+router.use(optionalAuth, hideTournamentPrivateData);
 
 const validStatuses = ['pending', 'active', 'completed', 'cancelled', 'dismissed'];
 const tournamentPopulate = [
@@ -791,7 +808,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-router.get('/:id/squad-lobby', async (req, res) => {
+router.get('/:id/squad-lobby', asLoggedInPlayer, async (req, res) => {
   try {
     const currentUserId = String(req.query.userId || '').trim();
     if (!currentUserId) {
@@ -847,7 +864,7 @@ router.get('/:id/squad-lobby', async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', adminOnly, async (req, res) => {
   try {
     const payload = normalizeTournamentPayload(req.body);
 
@@ -888,7 +905,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', adminOnly, async (req, res) => {
   try {
     if (isDBConnected()) {
       const tournament = await Tournament.findById(req.params.id);
@@ -922,7 +939,7 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', adminOnly, async (req, res) => {
   try {
     if (isDBConnected()) {
       const deleted = await Tournament.findByIdAndDelete(req.params.id);
@@ -945,7 +962,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-router.get('/:id/joins', async (req, res) => {
+router.get('/:id/joins', adminOnly, async (req, res) => {
   try {
     if (isDBConnected()) {
       const tournament = await Tournament.findById(req.params.id)
@@ -998,7 +1015,7 @@ router.get('/:id/joins', async (req, res) => {
   }
 });
 
-router.post('/:id/join', async (req, res) => {
+router.post('/:id/join', asLoggedInPlayer, async (req, res) => {
   try {
     const userId = req.body.userId || req.body._id || req.body.id;
     if (!userId) {
@@ -1068,7 +1085,7 @@ router.post('/:id/join', async (req, res) => {
   }
 });
 
-router.post('/:id/squads', async (req, res) => {
+router.post('/:id/squads', asLoggedInPlayer, async (req, res) => {
   try {
     const userId = req.body.userId || req.body._id || req.body.id;
 
@@ -1248,10 +1265,10 @@ const handleJoinSquadByPassword = async (req, res) => {
   }
 };
 
-router.post('/:id/squads/join-by-password', handleJoinSquadByPassword);
-router.post('/:id/squads/join-by-code', handleJoinSquadByPassword);
+router.post('/:id/squads/join-by-password', asLoggedInPlayer, handleJoinSquadByPassword);
+router.post('/:id/squads/join-by-code', asLoggedInPlayer, handleJoinSquadByPassword);
 
-router.post('/:id/squads/:squadId/join', async (req, res) => {
+router.post('/:id/squads/:squadId/join', asLoggedInPlayer, async (req, res) => {
   try {
     const userId = req.body.userId || req.body._id || req.body.id;
     if (!userId) {
@@ -1323,7 +1340,7 @@ router.post('/:id/squads/:squadId/join', async (req, res) => {
   }
 });
 
-router.delete('/:id/squads/:squadId', async (req, res) => {
+router.delete('/:id/squads/:squadId', adminOnly, async (req, res) => {
   try {
     if (isDBConnected()) {
       const tournament = await Tournament.findById(req.params.id);
@@ -1358,7 +1375,7 @@ router.delete('/:id/squads/:squadId', async (req, res) => {
   }
 });
 
-router.post('/:id/declare-winner', async (req, res) => {
+router.post('/:id/declare-winner', adminOnly, async (req, res) => {
   const normalizeDeclaredEntry = (entry) => {
     if (!entry) return null;
     const place = Number(entry.place || 0);
@@ -1720,7 +1737,7 @@ router.post('/:id/declare-winner', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-router.post('/:id/room-details', async (req, res) => {
+router.post('/:id/room-details', adminOnly, async (req, res) => {
   try {
     const roomId = req.body.room_id ?? req.body.roomId ?? '';
     const roomPassword = req.body.room_password ?? req.body.roomPassword ?? '';
@@ -1768,7 +1785,7 @@ router.post('/:id/room-details', async (req, res) => {
   }
 });
 
-router.post('/:id/finish', async (req, res) => {
+router.post('/:id/finish', adminOnly, async (req, res) => {
   try {
     if (isDBConnected()) {
       const tournament = await Tournament.findById(req.params.id);
@@ -1792,7 +1809,7 @@ router.post('/:id/finish', async (req, res) => {
   }
 });
 
-router.post('/:id/dismiss', async (req, res) => {
+router.post('/:id/dismiss', adminOnly, async (req, res) => {
   try {
     if (isDBConnected()) {
       const tournament = await Tournament.findById(req.params.id);
@@ -1816,7 +1833,7 @@ router.post('/:id/dismiss', async (req, res) => {
   }
 });
 
-router.post('/:id/refund', async (req, res) => {
+router.post('/:id/refund', adminOnly, async (req, res) => {
   try {
     if (isDBConnected()) {
       const tournament = await Tournament.findById(req.params.id);

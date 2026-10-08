@@ -182,6 +182,9 @@ tournamentSchema.pre('save', function syncTournamentFields(next) {
   next();
 });
 
+tournamentSchema.index({ currentPlayers: 1 });
+tournamentSchema.index({ 'squads.captain': 1 });
+
 export default mongoose.model('Tournament', tournamentSchema);
 
 

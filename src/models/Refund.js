@@ -12,4 +12,6 @@ const refundSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
+refundSchema.index({ userId: 1, createdAt: -1 });
+
 export default mongoose.model('Refund', refundSchema);

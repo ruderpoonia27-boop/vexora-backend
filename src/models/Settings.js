@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 const settingsSchema = new mongoose.Schema({
-  platform_name: { type: String, default: 'Nexus Arena' },
+  platform_name: { type: String, default: 'Vexora' },
   contact_email: { type: String, default: 'support@nexusarena.com' },
   min_deposit_amount: { type: Number, default: 10 },
   min_withdraw_amount: { type: Number, default: 50 },

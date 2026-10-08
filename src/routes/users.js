@@ -1,63 +1,111 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
 import Deposit from '../models/Deposit.js';
 import Refund from '../models/Refund.js';
 import Withdrawal from '../models/Withdrawal.js';
-import Settings from '../models/Settings.js';
 import WalletTransaction from '../models/WalletTransaction.js';
 import { isDBConnected } from '../config/database.js';
 import { getStore, persistStore } from '../config/fileStore.js';
+import { authenticate, optionalAuth, requireSelfOrAdmin } from '../middleware/auth.js';
+import { requestDeposit } from './wallet.js';
 import { serializeDeposit, serializeRefund, serializeUser, serializeWalletTransaction, serializeWithdrawal } from '../utils/serializers.js';
 
 const router = express.Router();
 
-const getMinimums = async () => {
-  if (isDBConnected()) {
-    const settings = await Settings.findOne();
-    return {
-      minDeposit: settings?.min_deposit_amount || 10,
-      minWithdraw: settings?.min_withdraw_amount || 50
-    };
-  }
-
-  const store = await getStore();
+// What anyone may see about another player.
+const serializePublicUser = (user, totalWinnings = 0) => {
+  const full = serializeUser(user);
   return {
-    minDeposit: store.settings?.min_deposit_amount || 10,
-    minWithdraw: store.settings?.min_withdraw_amount || 50
+    _id: full._id,
+    id: full.id,
+    name: full.name,
+    avatar_id: full.avatar_id,
+    avatarId: full.avatarId,
+    avatar_rarity: full.avatar_rarity,
+    avatarRarity: full.avatarRarity,
+    totalWinnings
   };
 };
 
-router.get('/', async (req, res) => {
+router.get('/', optionalAuth, async (req, res) => {
   try {
     const page = Math.max(1, Number(req.query.page) || 1);
-    const perPage = Math.max(1, Number(req.query.perPage || req.query.limit) || 50);
+    const perPage = Math.min(250, Math.max(1, Number(req.query.perPage || req.query.limit) || 50));
+    const serialize = req.user?.isAdmin ? serializeUser : (user) => serializePublicUser(user);
 
     if (isDBConnected()) {
       const [totalItems, users] = await Promise.all([
         User.countDocuments(),
-        User.find().select('-password').sort({ createdAt: -1 }).skip((page - 1) * perPage).limit(perPage)
+        User.find().select('-password -notifications').sort({ createdAt: -1 }).skip((page - 1) * perPage).limit(perPage)
       ]);
-      const items = users.map(serializeUser);
+      const items = users.map(serialize);
       return res.json({ items, users: items, page, perPage, totalItems, totalPages: Math.ceil(totalItems / perPage) || 1 });
     }
 
     const store = await getStore();
-    const items = store.users.map(serializeUser);
-    return res.json({ items, users: items, page: 1, perPage: items.length, totalItems: items.length, totalPages: 1 });
+    const items = store.users.slice((page - 1) * perPage, page * perPage).map(serialize);
+    return res.json({ items, users: items, page, perPage, totalItems: store.users.length, totalPages: Math.ceil(store.users.length / perPage) || 1 });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.get('/profile/:id', async (req, res) => {
+// Top players by prize money won (reward transactions), not by wallet balance.
+router.get('/leaderboard', async (req, res) => {
   try {
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 100));
+
     if (isDBConnected()) {
-      const user = await User.findById(req.params.id).select('-password');
+      const totals = await WalletTransaction.aggregate([
+        { $match: { type: 'reward' } },
+        { $group: { _id: '$userId', totalWinnings: { $sum: '$amount' } } },
+        { $sort: { totalWinnings: -1 } },
+        { $limit: limit }
+      ]);
+      const users = await User.find({ _id: { $in: totals.map((item) => item._id) }, isBlocked: { $ne: true } })
+        .select('name avatar_id avatar_rarity');
+      const byId = new Map(users.map((user) => [user._id.toString(), user]));
+      const items = totals
+        .filter((item) => byId.has(String(item._id)))
+        .map((item) => serializePublicUser(byId.get(String(item._id)), item.totalWinnings));
+      return res.json({ items });
+    }
+
+    const store = await getStore();
+    const totals = new Map();
+    for (const transaction of store.walletTransactions || []) {
+      if ((transaction.type || 'reward') !== 'reward') continue;
+      const userId = String(transaction.userId);
+      totals.set(userId, (totals.get(userId) || 0) + Number(transaction.amount || 0));
+    }
+    const items = [...totals.entries()]
+      .map(([userId, totalWinnings]) => ({ user: store.users.find((item) => item._id === userId && !item.isBlocked), totalWinnings }))
+      .filter((item) => item.user)
+      .sort((left, right) => right.totalWinnings - left.totalWinnings)
+      .slice(0, limit)
+      .map((item) => serializePublicUser(item.user, item.totalWinnings));
+    return res.json({ items });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/profile/:id', optionalAuth, async (req, res) => {
+  try {
+    const canSeeAll = req.user?.isAdmin || String(req.user?._id) === req.params.id;
+    const serialize = canSeeAll ? serializeUser : (user) => serializePublicUser(user);
+
+    if (isDBConnected()) {
+      if (!mongoose.isValidObjectId(req.params.id)) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      const user = await User.findById(req.params.id).select('-password -notifications');
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
-      return res.json(serializeUser(user));
+      return res.json(serialize(user));
     }
 
     const store = await getStore();
@@ -65,7 +113,7 @@ router.get('/profile/:id', async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
-    return res.json(serializeUser(user));
+    return res.json(serialize(user));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -129,91 +177,12 @@ const updateUser = async (req, res) => {
   }
 };
 
-router.put('/profile/:id', updateUser);
-router.put('/:id', updateUser);
+router.put('/profile/:id', authenticate, requireSelfOrAdmin('id'), updateUser);
+router.put('/:id', authenticate, requireSelfOrAdmin('id'), updateUser);
 
-router.post('/wallet-add', async (req, res) => {
-  try {
-    const { userId } = req.body;
-    const amount = Number(req.body.amount);
-    if (!userId || Number.isNaN(amount)) {
-      return res.status(400).json({ error: 'User and amount are required' });
-    }
+router.post('/wallet-request', authenticate, requestDeposit);
 
-    if (isDBConnected()) {
-      const user = await User.findByIdAndUpdate(userId, { $inc: { walletBalance: amount } }, { new: true }).select('-password');
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      return res.json(serializeUser(user));
-    }
-
-    const store = await getStore();
-    const user = store.users.find(u => u._id === userId || u.id === userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    user.walletBalance = (user.walletBalance || 0) + amount;
-    await persistStore();
-    return res.json(serializeUser(user));
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-router.post('/wallet-request', async (req, res) => {
-  try {
-    const userId = req.body.userId || req.body._id || req.body.id;
-    const amount = Number(req.body.amount);
-    const { transactionId, method, paymentScreenshot } = req.body;
-    if (!userId || !amount || !transactionId) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-    const { minDeposit } = await getMinimums();
-    if (amount < minDeposit) {
-      return res.status(400).json({ error: `Minimum deposit amount is ${minDeposit}` });
-    }
-
-    if (isDBConnected()) {
-      const user = await User.findById(userId);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      const deposit = await Deposit.create({
-        userId,
-        amount,
-        transaction_id: transactionId,
-        payment_method: method || 'UPI',
-        payment_screenshot: paymentScreenshot || '',
-        status: 'pending'
-      });
-      await deposit.populate('userId', 'name email');
-      return res.status(201).json({
-        message: 'Deposit request submitted successfully',
-        deposit: serializeDeposit(deposit)
-      });
-    }
-
-    const store = await getStore();
-    const deposit = {
-      _id: `offline_dep_${store.nextIds.deposit++}`,
-      userId,
-      amount,
-      transaction_id: transactionId,
-      payment_method: method || 'UPI',
-      payment_screenshot: paymentScreenshot || '',
-      status: 'pending',
-      createdAt: new Date().toISOString()
-    };
-    store.deposits.push(deposit);
-    await persistStore();
-    res.status(201).json({ message: 'Deposit request submitted successfully', deposit: serializeDeposit(deposit) });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.get('/deposits/:userId', async (req, res) => {
+router.get('/deposits/:userId', authenticate, requireSelfOrAdmin(), async (req, res) => {
   try {
     if (isDBConnected()) {
       const [deposits, refunds, walletTransactions] = await Promise.all([
@@ -247,7 +216,7 @@ router.get('/deposits/:userId', async (req, res) => {
   }
 });
 
-router.get('/withdrawals/history/:userId', async (req, res) => {
+router.get('/withdrawals/history/:userId', authenticate, requireSelfOrAdmin(), async (req, res) => {
   try {
     if (isDBConnected()) {
       const withdrawals = await Withdrawal.find({ userId: req.params.userId }).sort({ createdAt: -1 });

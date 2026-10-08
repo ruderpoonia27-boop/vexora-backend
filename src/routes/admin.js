@@ -4,6 +4,7 @@ import { isDBConnected } from '../config/database.js';
 import User from '../models/User.js';
 import Deposit from '../models/Deposit.js';
 import Withdrawal from '../models/Withdrawal.js';
+import WalletTransaction from '../models/WalletTransaction.js';
 import { authenticate, authorizeAdmin } from '../middleware/auth.js';
 import { serializeDeposit, serializeUser, serializeWithdrawal } from '../utils/serializers.js';
 import { completeReferralFirstDeposit, ensureReferralState, ensureReferralStats } from '../utils/referrals.js';
@@ -140,6 +141,13 @@ router.post('/users/:id/balance', authenticate, authorizeAdmin, async (req, res)
         link: '/wallet'
       });
       await user.save();
+      await WalletTransaction.create({
+        userId: user._id,
+        amount,
+        type: action === 'add' ? 'admin_credit' : 'admin_debit',
+        description: note,
+        status: 'approved'
+      });
       return res.json({ message: 'Wallet balance updated', user: serializeUser(user) });
     }
 
@@ -154,6 +162,15 @@ router.post('/users/:id/balance', authenticate, authorizeAdmin, async (req, res)
       type: 'wallet',
       message: `Admin ${action === 'add' ? 'added' : 'deducted'} Rs.${amount}${note ? `: ${note}` : ''}`,
       link: '/wallet'
+    });
+    store.walletTransactions.push({
+      _id: `offline_wtx_${store.nextIds.walletTransaction++}`,
+      userId: user._id,
+      amount,
+      type: action === 'add' ? 'admin_credit' : 'admin_debit',
+      description: note,
+      status: 'approved',
+      createdAt: new Date().toISOString()
     });
     await persistStore();
     return res.json({ message: 'Wallet balance updated', user: serializeUser(user) });
@@ -375,7 +392,7 @@ router.post('/deposits/:id/reject', authenticate, authorizeAdmin, async (req, re
 router.get('/withdrawals', authenticate, authorizeAdmin, async (req, res) => {
   try {
     if (isDBConnected()) {
-      const withdrawals = await Withdrawal.find().sort({ createdAt: -1 }).populate('userId', 'name email');
+      const withdrawals = await Withdrawal.find().sort({ createdAt: -1 }).limit(500).populate('userId', 'name email').lean();
       return res.json(withdrawals.map(serializeWithdrawal));
     }
 
@@ -395,121 +412,140 @@ router.get('/withdrawals', authenticate, authorizeAdmin, async (req, res) => {
   }
 });
 
+const withdrawalPopulate = { path: 'userId', select: 'name email' };
+
+const wasDebitedOnRequest = (withdrawal) => (
+  withdrawal.debited_at_request !== false && withdrawal.debitedAtRequest !== false
+);
+
+const pushWalletNotification = (userId, message) => User.updateOne(
+  { _id: userId },
+  { $push: { notifications: { message, type: 'wallet', link: '/wallet', read: false, createdAt: new Date() } } }
+).catch((error) => console.error('Wallet notification failed:', error.message));
+
+// Approving or rejecting an already-processed request returns its current state instead of an error,
+// so double clicks and two admins acting at once are harmless.
+const alreadyProcessed = (res, withdrawal) => res.json({
+  message: `Withdrawal already ${withdrawal.status}`,
+  alreadyProcessed: true,
+  wd: serializeWithdrawal(withdrawal)
+});
+
 router.post('/withdrawals/:id/approve', authenticate, authorizeAdmin, async (req, res) => {
   try {
     if (isDBConnected()) {
-      const withdrawal = await Withdrawal.findById(req.params.id);
+      const withdrawal = await Withdrawal.findById(req.params.id).lean();
       if (!withdrawal) return res.status(404).json({ error: 'Withdrawal not found' });
-      if (withdrawal.status !== 'pending') return res.status(400).json({ error: `Withdrawal already ${withdrawal.status}` });
-
-      const user = await User.findById(withdrawal.userId);
-      if (user) {
-        const wasDebitedOnRequest = withdrawal.debited_at_request !== false && withdrawal.debitedAtRequest !== false;
-        if (!wasDebitedOnRequest) {
-          if ((user.walletBalance || 0) < withdrawal.amount) {
-            return res.status(400).json({ error: 'User wallet balance is no longer sufficient for this withdrawal' });
-          }
-          user.walletBalance = (user.walletBalance || 0) - withdrawal.amount;
-        }
-        withdrawal.status = 'approved';
-        addUserNotification(user, {
-          type: 'wallet',
-          message: `Your withdrawal of Rs.${withdrawal.amount} was approved.`,
-          link: '/wallet'
-        });
-        await user.save();
-      } else {
-        withdrawal.status = 'approved';
+      if (withdrawal.status !== 'pending') {
+        return alreadyProcessed(res, await Withdrawal.findById(withdrawal._id).populate(withdrawalPopulate));
       }
-      await withdrawal.save();
-      await withdrawal.populate('userId', 'name email');
-      return res.json({ message: 'Withdrawal approved', wd: serializeWithdrawal(withdrawal) });
+
+      // Withdrawals created before debit-on-request still need their amount taken at approval.
+      const needsDebit = !wasDebitedOnRequest(withdrawal);
+      if (needsDebit) {
+        const debited = await User.findOneAndUpdate(
+          { _id: withdrawal.userId, walletBalance: { $gte: withdrawal.amount } },
+          { $inc: { walletBalance: -withdrawal.amount } }
+        );
+        if (!debited) {
+          return res.status(400).json({ error: `User's balance is now below Rs.${withdrawal.amount}. Reject this request instead.` });
+        }
+      }
+
+      const approved = await Withdrawal.findOneAndUpdate(
+        { _id: withdrawal._id, status: 'pending' },
+        { $set: { status: 'approved' } },
+        { new: true }
+      ).populate(withdrawalPopulate);
+
+      if (!approved) {
+        if (needsDebit) {
+          await User.updateOne({ _id: withdrawal.userId }, { $inc: { walletBalance: withdrawal.amount } });
+        }
+        return alreadyProcessed(res, await Withdrawal.findById(withdrawal._id).populate(withdrawalPopulate));
+      }
+
+      await pushWalletNotification(withdrawal.userId, `Your withdrawal of Rs.${withdrawal.amount} was approved and sent to ${withdrawal.upi_id}.`);
+      return res.json({ message: 'Withdrawal approved', wd: serializeWithdrawal(approved) });
     }
 
     const store = await getStore();
-    const wdIndex = store.withdrawals.findIndex(w => w._id === req.params.id || w.id === req.params.id);
-    if (wdIndex === -1) return res.status(404).json({ error: 'Withdrawal not found' });
-    const wd = store.withdrawals[wdIndex];
-    if (wd.status !== 'pending') return res.status(400).json({ error: `Withdrawal already ${wd.status}` });
-    const user = store.users.find(u => u._id === wd.userId || u.id === wd.userId);
-    if (user) {
-      const wasDebitedOnRequest = wd.debited_at_request !== false && wd.debitedAtRequest !== false;
-      if (!wasDebitedOnRequest) {
-        if ((user.walletBalance || 0) < wd.amount) {
-          return res.status(400).json({ error: 'User wallet balance is no longer sufficient for this withdrawal' });
-        }
-        user.walletBalance = (user.walletBalance || 0) - wd.amount;
+    const wd = store.withdrawals.find((item) => item._id === req.params.id || item.id === req.params.id);
+    if (!wd) return res.status(404).json({ error: 'Withdrawal not found' });
+    if (wd.status !== 'pending') return alreadyProcessed(res, wd);
+
+    const user = store.users.find((item) => item._id === wd.userId || item.id === wd.userId);
+    if (!wasDebitedOnRequest(wd)) {
+      if (!user || (user.walletBalance || 0) < wd.amount) {
+        return res.status(400).json({ error: `User's balance is now below Rs.${wd.amount}. Reject this request instead.` });
       }
-      wd.status = 'approved';
+      user.walletBalance -= wd.amount;
+    }
+    wd.status = 'approved';
+    if (user) {
       addOfflineUserNotification(user, {
         type: 'wallet',
-        message: `Your withdrawal of Rs.${wd.amount} was approved.`,
+        message: `Your withdrawal of Rs.${wd.amount} was approved and sent to ${wd.upi_id}.`,
         link: '/wallet'
       });
-    } else {
-      wd.status = 'approved';
     }
     await persistStore();
-    res.json({ message: 'Withdrawal approved', wd: serializeWithdrawal(wd) });
+    return res.json({ message: 'Withdrawal approved', wd: serializeWithdrawal(wd) });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
 router.post('/withdrawals/:id/reject', authenticate, authorizeAdmin, async (req, res) => {
   try {
     if (isDBConnected()) {
-      const withdrawal = await Withdrawal.findById(req.params.id);
-      if (!withdrawal) return res.status(404).json({ error: 'Withdrawal not found' });
-      if (withdrawal.status !== 'pending') return res.status(400).json({ error: `Withdrawal already ${withdrawal.status}` });
-
-      withdrawal.status = 'rejected';
-      const user = await User.findById(withdrawal.userId);
-      if (user) {
-        const wasDebitedOnRequest = withdrawal.debited_at_request !== false && withdrawal.debitedAtRequest !== false;
-        if (wasDebitedOnRequest) {
-          user.walletBalance = (user.walletBalance || 0) + withdrawal.amount;
-        }
-        addUserNotification(user, {
-          type: 'wallet',
-          message: wasDebitedOnRequest
-            ? `Your withdrawal of Rs.${withdrawal.amount} was rejected and refunded.`
-            : `Your withdrawal of Rs.${withdrawal.amount} was rejected.`,
-          link: '/wallet'
-        });
+      const rejected = await Withdrawal.findOneAndUpdate(
+        { _id: req.params.id, status: 'pending' },
+        { $set: { status: 'rejected' } },
+        { new: true }
+      );
+      if (!rejected) {
+        const current = await Withdrawal.findById(req.params.id).populate(withdrawalPopulate);
+        if (!current) return res.status(404).json({ error: 'Withdrawal not found' });
+        return alreadyProcessed(res, current);
       }
-      await Promise.all([
-        withdrawal.save(),
-        user?.save?.()
-      ].filter(Boolean));
-      await withdrawal.populate('userId', 'name email');
-      return res.json({ message: 'Withdrawal rejected and amount refunded', wd: serializeWithdrawal(withdrawal) });
+
+      const refund = wasDebitedOnRequest(rejected);
+      if (refund) {
+        await User.updateOne({ _id: rejected.userId }, { $inc: { walletBalance: rejected.amount } });
+      }
+      await pushWalletNotification(
+        rejected.userId,
+        refund
+          ? `Your withdrawal of Rs.${rejected.amount} was rejected. The amount is back in your wallet.`
+          : `Your withdrawal of Rs.${rejected.amount} was rejected.`
+      );
+      await rejected.populate(withdrawalPopulate);
+      return res.json({ message: refund ? 'Withdrawal rejected and amount refunded' : 'Withdrawal rejected', wd: serializeWithdrawal(rejected) });
     }
 
     const store = await getStore();
-    const wdIndex = store.withdrawals.findIndex(w => w._id === req.params.id || w.id === req.params.id);
-    if (wdIndex === -1) return res.status(404).json({ error: 'Withdrawal not found' });
-    const wd = store.withdrawals[wdIndex];
-    if (wd.status !== 'pending') return res.status(400).json({ error: `Withdrawal already ${wd.status}` });
+    const wd = store.withdrawals.find((item) => item._id === req.params.id || item.id === req.params.id);
+    if (!wd) return res.status(404).json({ error: 'Withdrawal not found' });
+    if (wd.status !== 'pending') return alreadyProcessed(res, wd);
+
     wd.status = 'rejected';
-    const user = store.users.find(u => u._id === wd.userId || u.id === wd.userId);
+    const refund = wasDebitedOnRequest(wd);
+    const user = store.users.find((item) => item._id === wd.userId || item.id === wd.userId);
     if (user) {
-      const wasDebitedOnRequest = wd.debited_at_request !== false && wd.debitedAtRequest !== false;
-      if (wasDebitedOnRequest) {
-        user.walletBalance = (user.walletBalance || 0) + wd.amount;
-      }
+      if (refund) user.walletBalance = (user.walletBalance || 0) + wd.amount;
       addOfflineUserNotification(user, {
         type: 'wallet',
-        message: wasDebitedOnRequest
-          ? `Your withdrawal of Rs.${wd.amount} was rejected and refunded.`
+        message: refund
+          ? `Your withdrawal of Rs.${wd.amount} was rejected. The amount is back in your wallet.`
           : `Your withdrawal of Rs.${wd.amount} was rejected.`,
         link: '/wallet'
       });
     }
     await persistStore();
-    res.json({ message: 'Withdrawal rejected and amount refunded', wd: serializeWithdrawal(wd) });
+    return res.json({ message: refund ? 'Withdrawal rejected and amount refunded' : 'Withdrawal rejected', wd: serializeWithdrawal(wd) });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 

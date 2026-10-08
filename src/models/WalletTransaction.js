@@ -6,7 +6,7 @@ const walletTransactionSchema = new mongoose.Schema({
   amount: { type: Number, required: true },
   type: {
     type: String,
-    enum: ['reward'],
+    enum: ['reward', 'admin_credit', 'admin_debit'],
     default: 'reward'
   },
   description: { type: String, default: 'Wallet transaction' },
@@ -17,5 +17,7 @@ const walletTransactionSchema = new mongoose.Schema({
   },
   metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
+
+walletTransactionSchema.index({ userId: 1, createdAt: -1 });
 
 export default mongoose.model('WalletTransaction', walletTransactionSchema);

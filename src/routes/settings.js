@@ -3,6 +3,8 @@ import Settings from '../models/Settings.js';
 import PaymentSettings from '../models/PaymentSettings.js';
 import { isDBConnected } from '../config/database.js';
 import { getStore, persistStore } from '../config/fileStore.js';
+import { cached, invalidate } from '../utils/settingsCache.js';
+import { authenticate, authorizeAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
 const defaultContactSettings = {
@@ -33,7 +35,7 @@ const ensureOfflineSettings = async () => {
   const store = await getStore();
   store.settings = {
     _id: 'settings_1',
-    platform_name: 'Nexus Arena',
+    platform_name: 'Vexora',
     contact_email: 'support@nexusarena.com',
     min_deposit_amount: 10,
     min_withdraw_amount: 50,
@@ -58,6 +60,9 @@ const getSettingsRecord = async () => {
   return settings;
 };
 
+export const getCachedSettings = () => cached('settings', async () => (await getSettingsRecord()).toObject());
+const getCachedPaymentSettings = () => cached('paymentSettings', async () => (await getPaymentSettingsRecord()).toObject());
+
 const getPaymentSettingsRecord = async () => {
   let settings = await PaymentSettings.findOne();
   if (!settings) {
@@ -69,8 +74,7 @@ const getPaymentSettingsRecord = async () => {
 router.get('/settings', async (req, res) => {
   try {
     if (isDBConnected()) {
-      const settings = await getSettingsRecord();
-      return res.json([settings]);
+      return res.json([await getCachedSettings()]);
     }
 
     const store = await ensureOfflineSettings();
@@ -81,13 +85,13 @@ router.get('/settings', async (req, res) => {
   }
 });
 
-router.put('/settings/:id', async (req, res) => {
+router.put('/settings/:id', authenticate, authorizeAdmin, async (req, res) => {
   try {
     const currentContactSettings = isDBConnected()
       ? normalizeContactSettings((await getSettingsRecord()).contactSettings, defaultContactSettings)
       : normalizeContactSettings((await ensureOfflineSettings()).settings?.contactSettings, defaultContactSettings);
     const payload = {
-      platform_name: String(req.body.platform_name ?? req.body.platformName ?? 'Nexus Arena').trim() || 'Nexus Arena',
+      platform_name: String(req.body.platform_name ?? req.body.platformName ?? 'Vexora').trim() || 'Vexora',
       contact_email: String(req.body.contact_email ?? req.body.contactEmail ?? 'support@nexusarena.com').trim() || 'support@nexusarena.com',
       min_deposit_amount: Number(req.body.min_deposit_amount),
       min_withdraw_amount: Number(req.body.min_withdraw_amount),
@@ -108,6 +112,7 @@ router.put('/settings/:id', async (req, res) => {
       const settings = await getSettingsRecord();
       Object.assign(settings, payload);
       await settings.save();
+      invalidate('settings');
       return res.json(settings);
     }
 
@@ -123,8 +128,8 @@ router.put('/settings/:id', async (req, res) => {
 router.get('/payment-settings', async (req, res) => {
   try {
     if (isDBConnected()) {
-      const settings = await getPaymentSettingsRecord();
-      return res.json([settings]);
+      res.set('Cache-Control', 'private, max-age=60');
+      return res.json([await getCachedPaymentSettings()]);
     }
 
     const store = await ensureOfflineSettings();
@@ -135,7 +140,7 @@ router.get('/payment-settings', async (req, res) => {
   }
 });
 
-router.put('/payment-settings/:id', async (req, res) => {
+router.put('/payment-settings/:id', authenticate, authorizeAdmin, async (req, res) => {
   try {
     const payload = {
       upi_id: req.body.upi_id || '',
@@ -146,6 +151,7 @@ router.put('/payment-settings/:id', async (req, res) => {
       const settings = await getPaymentSettingsRecord();
       Object.assign(settings, payload);
       await settings.save();
+      invalidate('paymentSettings');
       return res.json(settings);
     }
 

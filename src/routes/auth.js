@@ -1,18 +1,43 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import { isDBConnected } from '../config/database.js';
 import { getStore, persistStore } from '../config/fileStore.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, signToken } from '../middleware/auth.js';
+import { rateLimit } from '../middleware/rateLimit.js';
 import { serializeUser } from '../utils/serializers.js';
 import { addReferralSignup, createUniqueReferralCode, ensureReferralState, normalizeReferralCode } from '../utils/referrals.js';
 
 const router = express.Router();
 
-router.post('/register', async (req, res) => {
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+
+// Accounts created before emails were normalized may have mixed case; match those too.
+const findUserByEmail = async (email) => {
+  const exact = await User.findOne({ email });
+  if (exact) return exact;
+  const escaped = email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return User.findOne({ email: { $regex: `^${escaped}$`, $options: 'i' } });
+};
+const findOfflineUserByEmail = (store, email) => store.users.find((user) => normalizeEmail(user.email) === email);
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyFn: (req) => `${req.ip}:${normalizeEmail(req.body?.email)}`,
+  message: 'Too many login attempts. Please wait 15 minutes and try again.'
+});
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: 'Too many sign-ups from this network. Please try again later.'
+});
+
+router.post('/register', registerLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = normalizeEmail(req.body.email);
+    const password = String(req.body.password || '');
     const providedName = String(req.body.name || '').trim();
     const name = providedName || `Player${Date.now().toString(36).toUpperCase()}`;
     const avatarId = String(req.body.avatarId || req.body.avatar_id || 'vanguard-01').trim() || 'vanguard-01';
@@ -22,6 +47,12 @@ router.post('/register', async (req, res) => {
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
+    if (!EMAIL_PATTERN.test(email)) {
+      return res.status(400).json({ error: 'Enter a valid email address' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
     if (!acceptedPolicies) {
       return res.status(400).json({ error: 'You must accept the Terms & Conditions and Privacy Policy' });
     }
@@ -29,7 +60,7 @@ router.post('/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     
     if (isDBConnected()) {
-      const existingUser = await User.findOne({ email });
+      const existingUser = await findUserByEmail(email);
       if (existingUser) {
         return res.status(400).json({ error: 'Email already exists' });
       }
@@ -53,7 +84,7 @@ router.post('/register', async (req, res) => {
         name,
         avatar_id: avatarId,
         profile_setup_completed: !!providedName,
-        isAdmin: email === process.env.DEFAULT_ADMIN_EMAIL,
+        isAdmin: false,
         referral_code: uniqueReferralCode,
         referred_by: referrer?._id,
         referred_by_code: referrer?.referral_code || '',
@@ -69,7 +100,7 @@ router.post('/register', async (req, res) => {
         addReferralSignup(referrer, user);
         await referrer.save();
       }
-      const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'default-secret', { expiresIn: '7d' });
+      const token = signToken(user._id);
       
       return res.json({ 
         token, 
@@ -77,7 +108,7 @@ router.post('/register', async (req, res) => {
       });
     } else {
       const store = await getStore();
-      const existingOffline = store.users.find(u => u.email === email);
+      const existingOffline = findOfflineUserByEmail(store, email);
       if (existingOffline) {
         return res.status(400).json({ error: 'Email already exists' });
       }
@@ -102,7 +133,7 @@ router.post('/register', async (req, res) => {
         avatar_id: avatarId,
         profile_setup_completed: !!providedName,
         walletBalance: 0,
-        isAdmin: email === process.env.DEFAULT_ADMIN_EMAIL,
+        isAdmin: false,
         referral_code: uniqueReferralCode,
         referred_by: referrer?._id || '',
         referred_by_code: referrer?.referral_code || '',
@@ -120,7 +151,7 @@ router.post('/register', async (req, res) => {
       }
       await persistStore();
       
-      const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'default-secret', { expiresIn: '7d' });
+      const token = signToken(user._id);
       
       return res.json({ 
         token, 
@@ -133,16 +164,17 @@ router.post('/register', async (req, res) => {
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = normalizeEmail(req.body.email);
+    const password = String(req.body.password || '');
     
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
     
     if (isDBConnected()) {
-      const user = await User.findOne({ email });
+      const user = await findUserByEmail(email);
       if (!user) {
         return res.status(400).json({ error: 'Invalid credentials' });
       }
@@ -156,7 +188,7 @@ router.post('/login', async (req, res) => {
         return res.status(400).json({ error: 'Invalid credentials' });
       }
       
-      const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'default-secret', { expiresIn: '7d' });
+      const token = signToken(user._id);
       
       return res.json({ 
         token, 
@@ -164,7 +196,7 @@ router.post('/login', async (req, res) => {
       });
     } else {
       const store = await getStore();
-      const user = store.users.find(u => u.email === email);
+      const user = findOfflineUserByEmail(store, email);
       if (!user) {
         return res.status(400).json({ error: 'Invalid credentials' });
       }
@@ -178,7 +210,7 @@ router.post('/login', async (req, res) => {
         return res.status(400).json({ error: 'Invalid credentials' });
       }
       
-      const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'default-secret', { expiresIn: '7d' });
+      const token = signToken(user._id);
       
       return res.json({ 
         token, 
