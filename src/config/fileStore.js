@@ -27,7 +27,7 @@ const defaultStore = {
   },
   paymentSettings: {
     _id: 'payment_settings_1',
-    upi_id: 'tournament@upi',
+    upi_id: '',
     qr_code: ''
   },
   nextIds: { user: 1, tournament: 1, announcement: 1, deposit: 1, refund: 1, withdrawal: 1, walletTransaction: 1 }

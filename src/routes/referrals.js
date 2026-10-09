@@ -35,7 +35,6 @@ const serializeReferralItem = (item, index) => {
   return {
     id: item?._id?.toString?.() || item?.userId?.toString?.() || user?._id?.toString?.() || `referral_${index}`,
     username: item?.user_name || user?.name || 'Unknown Player',
-    email: item?.user_email || user?.email || '',
     avatarId: item?.avatar_id || item?.avatarId || user?.avatar_id || user?.avatarId || 'vanguard-01',
     signupComplete: item?.signup_completed !== false,
     depositComplete,
@@ -78,6 +77,7 @@ router.get('/me', authenticate, async (req, res) => {
         referralLink: `${buildClientUrl(req)}/ref/${user.referral_code}`,
         stats: {
           freeEntriesEarned: Number(stats.free_entries_earned || 0),
+          freeEntriesAvailable: Math.max(0, Number(stats.free_entries_earned || 0) - Number(stats.free_entries_used || 0)),
           squadsCompleted: Number(stats.squads_completed || 0),
           completedReferrals: Number(stats.completed_deposits || 0),
           currentProgress: Number(stats.current_progress || 0),
@@ -122,6 +122,7 @@ router.get('/me', authenticate, async (req, res) => {
       referralLink: `${buildClientUrl(req)}/ref/${user.referral_code}`,
       stats: {
         freeEntriesEarned: Number(stats.free_entries_earned || 0),
+        freeEntriesAvailable: Math.max(0, Number(stats.free_entries_earned || 0) - Number(stats.free_entries_used || 0)),
         squadsCompleted: Number(stats.squads_completed || 0),
         completedReferrals: Number(stats.completed_deposits || 0),
         currentProgress: Number(stats.current_progress || 0),

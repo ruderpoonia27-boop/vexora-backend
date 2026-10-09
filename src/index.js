@@ -16,7 +16,7 @@ import settingsRoutes from './routes/settings.js';
 import referralRoutes from './routes/referrals.js';
 import announcementRoutes from './routes/announcements.js';
 import walletRoutes from './routes/wallet.js';
-import { isDBConnected } from './config/database.js';
+import { isDBConnected, isOfflineMode, onDBConnected } from './config/database.js';
 import { getStore, persistStore } from './config/fileStore.js';
 import { authenticate, getJwtSecret } from './middleware/auth.js';
 import { ensureUniqueReferralCodesForUsers } from './utils/referrals.js';
@@ -54,6 +54,23 @@ const getAllowedOrigins = () => (
     .filter(Boolean)
 );
 
+// Seeding runs once, as soon as the data store is available (MongoDB may connect after a retry).
+let startupTasksPromise = null;
+const runStartupTasks = () => {
+  if (!startupTasksPromise) {
+    startupTasksPromise = (async () => {
+      await seedAdmin();
+      await normalizeReferralCodes();
+      await seedAnnouncements();
+    })().catch((error) => {
+      startupTasksPromise = null;
+      throw error;
+    });
+  }
+  return startupTasksPromise;
+};
+onDBConnected(runStartupTasks);
+
 export const ensureStartup = () => {
   if (!startupPromise) {
     startupPromise = (async () => {
@@ -62,9 +79,9 @@ export const ensureStartup = () => {
       if (process.env.VERCEL && !isDBConnected()) {
         throw new Error('MongoDB connection is required on Vercel. Set MONGODB_URI and allow Vercel IP access in MongoDB Atlas.');
       }
-      await seedAdmin();
-      await normalizeReferralCodes();
-      await seedAnnouncements();
+      if (isDBConnected() || isOfflineMode()) {
+        await runStartupTasks();
+      }
     })().catch((error) => {
       startupPromise = null;
       throw error;
@@ -103,6 +120,13 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ extended: true, limit: '8mb' }));
+
+// While MongoDB is (re)connecting, answer clearly instead of silently serving or writing the local fallback file.
+app.use('/api', (req, res, next) => {
+  if (req.path === '/health' || isOfflineMode() || isDBConnected()) return next();
+  res.set('Retry-After', '5');
+  return res.status(503).json({ error: 'Database is connecting. Please try again in a few seconds.' });
+});
 
 if (process.env.VERCEL) {
   app.use(async (req, res, next) => {

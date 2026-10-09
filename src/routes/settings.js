@@ -7,6 +7,7 @@ import { cached, invalidate } from '../utils/settingsCache.js';
 import { authenticate, authorizeAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
+const PAYMENT_DISPLAY_MODES = ['both', 'upi', 'qr'];
 const defaultContactSettings = {
   whatsappEnabled: true,
   whatsappNumber: '',
@@ -45,8 +46,9 @@ const ensureOfflineSettings = async () => {
   store.settings.contactSettings = normalizeContactSettings(store.settings.contactSettings, defaultContactSettings);
   store.paymentSettings = {
     _id: 'payment_settings_1',
-    upi_id: 'tournament@upi',
+    upi_id: '',
     qr_code: '',
+    display_mode: 'both',
     ...(store.paymentSettings || {})
   };
   return store;
@@ -142,10 +144,19 @@ router.get('/payment-settings', async (req, res) => {
 
 router.put('/payment-settings/:id', authenticate, authorizeAdmin, async (req, res) => {
   try {
+    const displayMode = PAYMENT_DISPLAY_MODES.includes(req.body.display_mode) ? req.body.display_mode : 'both';
     const payload = {
-      upi_id: req.body.upi_id || '',
-      qr_code: req.body.qr_code || ''
+      upi_id: String(req.body.upi_id || '').trim(),
+      qr_code: req.body.qr_code || '',
+      display_mode: displayMode
     };
+
+    if (displayMode !== 'qr' && !payload.upi_id) {
+      return res.status(400).json({ error: displayMode === 'upi' ? 'Add a UPI ID to show it on the deposit page.' : "Add a UPI ID, or choose 'Only QR code'." });
+    }
+    if (displayMode !== 'upi' && !payload.qr_code) {
+      return res.status(400).json({ error: displayMode === 'qr' ? 'Upload a QR code to show it on the deposit page.' : "Upload a QR code, or choose 'Only UPI ID'." });
+    }
 
     if (isDBConnected()) {
       const settings = await getPaymentSettingsRecord();

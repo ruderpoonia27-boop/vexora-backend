@@ -29,6 +29,8 @@ const tournamentSchema = new mongoose.Schema({
     percentage: { type: Number, default: 0 },
     amount: { type: Number, default: 0 }
   }],
+  // Percentage of entry fees kept by the platform (percentage-based paid tournaments only).
+  platform_fee_percentage: { type: Number, default: 50, min: 0, max: 90 },
   first_prize_percentage: { type: Number, default: 50, min: 1, max: 100 },
   firstPrizePercentage: Number,
   solo_first_place_percentage: { type: Number, default: 60, min: 0, max: 100 },

@@ -1,3 +1,5 @@
+import { calculatePrizeBreakdown } from './prizes.js';
+
 const asId = (value) => value?._id?.toString?.() || value?.toString?.() || value;
 
 const serializePlayer = (player) => {
@@ -186,7 +188,9 @@ export const serializeTournament = (tournament) => {
     ? squads.reduce((sum, squad) => sum + Number(squad.totalEntryFee || squadEntryFee || 0), 0)
     : entryFee * joinedCount;
   const fixedPrizePool = prizeDistribution.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const publicPrizePool = prizeDistributionType === 'fixed' && fixedPrizePool > 0 ? fixedPrizePool : basePrize + totalCollection;
+  // Show players only what will actually be paid out (after the platform fee).
+  const prizeBreakdown = calculatePrizeBreakdown(source);
+  const publicPrizePool = prizeDistributionType === 'fixed' && fixedPrizePool > 0 ? fixedPrizePool : prizeBreakdown.prizePool;
 
   return {
     ...source,
@@ -219,6 +223,10 @@ export const serializeTournament = (tournament) => {
     prizeDistribution,
     public_prize_pool: publicPrizePool,
     publicPrizePool,
+    max_prize_pool: prizeBreakdown.maxPrizePool,
+    maxPrizePool: prizeBreakdown.maxPrizePool,
+    platform_fee_percentage: prizeBreakdown.platformFeePercentage,
+    platformFeePercentage: prizeBreakdown.platformFeePercentage,
     total_prize_pool: publicPrizePool,
     totalPrizePool: publicPrizePool,
     first_prize_percentage: firstPrizePercentage,

@@ -1,3 +1,16 @@
+// Share of entry fees the platform keeps on percentage-based paid tournaments.
+export const DEFAULT_PLATFORM_FEE_PERCENTAGE = 50;
+
+export const getPlatformFeePercentage = (tournament) => {
+  const value = Number(tournament?.platform_fee_percentage ?? tournament?.platformFeePercentage ?? DEFAULT_PLATFORM_FEE_PERCENTAGE);
+  return Number.isFinite(value) ? Math.min(90, Math.max(0, value)) : DEFAULT_PLATFORM_FEE_PERCENTAGE;
+};
+
+// Players get the entry fees minus the platform fee; an admin-added base prize is paid out in full.
+export const getPlayerShareOfCollection = (collection, feePercentage) => (
+  Math.floor((Number(collection || 0) * (100 - feePercentage)) / 100)
+);
+
 export const isSquadTournament = (tournament) => (
   (tournament?.match_type || tournament?.matchType) === 'squad'
 );
@@ -55,9 +68,16 @@ export const calculatePrizeBreakdown = (tournament) => {
     ]
     : [{ place: 1, label: 'Winning Squad', percentage: firstPrizePercentage, amount: 0 }];
   const sourceDistribution = configuredDistribution.length ? configuredDistribution : legacyDistribution;
-  const percentageRewardBase = entryType === 'paid' && distributionType === 'percentage'
-    ? Math.floor(totalPrizePool * 0.5)
+  const platformFeePercentage = getPlatformFeePercentage(tournament);
+  const chargesPlatformFee = entryType === 'paid' && distributionType === 'percentage';
+  const percentageRewardBase = chargesPlatformFee
+    ? basePrize + getPlayerShareOfCollection(totalCollection, platformFeePercentage)
     : totalPrizePool;
+  const totalSlots = Number(tournament?.total_slots ?? tournament?.totalSlots ?? 0);
+  // What the pool reaches if every slot fills (total_slots counts players, also for squads).
+  const maxPrizePool = chargesPlatformFee
+    ? basePrize + getPlayerShareOfCollection(entryFee * totalSlots, platformFeePercentage)
+    : null;
   const prizeEntries = sourceDistribution.map((item, index) => {
     const place = Number(item.place || index + 1);
     const percentage = Number(item.percentage || 0);
@@ -74,7 +94,7 @@ export const calculatePrizeBreakdown = (tournament) => {
   }).filter((item) => item.amount > 0 || distributionType === 'percentage');
   const prizePool = distributionType === 'fixed'
     ? prizeEntries.reduce((sum, item) => sum + item.amount, 0)
-    : totalPrizePool;
+    : percentageRewardBase;
   const rewardPool = prizeEntries.reduce((sum, item) => sum + item.amount, 0);
   const firstPrize = prizeEntries[0]?.amount || 0;
   const secondPrize = prizeEntries[1]?.amount || 0;
@@ -98,6 +118,8 @@ export const calculatePrizeBreakdown = (tournament) => {
     soloThirdPercentage,
     soloTotalPercentage: soloFirstPercentage + soloSecondPercentage + soloThirdPercentage,
     platformEarnings,
+    platformFeePercentage: chargesPlatformFee ? platformFeePercentage : 0,
+    maxPrizePool,
     joinedCount,
     entryFee,
     squadSize: Number(tournament?.squad_size ?? tournament?.squadSize ?? (squadMatch ? 4 : 1))

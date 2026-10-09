@@ -76,6 +76,7 @@ const normalizeTournamentPayload = (body, existingTournament = null) => {
   const soloSecondPlacePercentage = Number(body.solo_second_place_percentage ?? body.soloSecondPlacePercentage ?? current?.solo_second_place_percentage ?? current?.soloSecondPlacePercentage ?? 30);
   const soloThirdPlacePercentage = Number(body.solo_third_place_percentage ?? body.soloThirdPlacePercentage ?? current?.solo_third_place_percentage ?? current?.soloThirdPlacePercentage ?? 10);
   const totalSlots = Number(body.total_slots ?? body.totalSlots ?? current?.total_slots ?? current?.totalSlots ?? 1);
+  const platformFeePercentage = Number(body.platform_fee_percentage ?? body.platformFeePercentage ?? current?.platform_fee_percentage ?? current?.platformFeePercentage ?? 50);
   const matchType = body.match_type || body.matchType || current?.match_type || current?.matchType || 'solo';
   const squadSize = Number(body.squad_size ?? body.squadSize ?? current?.squad_size ?? current?.squadSize ?? (matchType === 'squad' ? 4 : 1));
   if (!prizeDistribution.length) {
@@ -135,6 +136,9 @@ const normalizeTournamentPayload = (body, existingTournament = null) => {
   if (Number.isNaN(totalSlots) || totalSlots < 1) {
     throw new Error('Total slots must be at least 1');
   }
+  if (Number.isNaN(platformFeePercentage) || platformFeePercentage < 0 || platformFeePercentage > 90) {
+    throw new Error('Platform fee must be between 0% and 90%');
+  }
   if (!['solo', 'squad'].includes(matchType)) {
     throw new Error('Match type must be solo or squad');
   }
@@ -167,6 +171,8 @@ const normalizeTournamentPayload = (body, existingTournament = null) => {
     prizePool: distributionType === 'fixed' ? prizeDistribution.reduce((sum, item) => sum + Number(item.amount || 0), 0) : basePrize,
     prize_distribution_type: distributionType,
     prizeDistributionType: distributionType,
+    platform_fee_percentage: platformFeePercentage,
+    platformFeePercentage,
     winner_count: winnerCount,
     winnerCount,
     prize_distribution: prizeDistribution,
